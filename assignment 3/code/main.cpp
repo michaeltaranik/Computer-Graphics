@@ -16,7 +16,10 @@
 
 using namespace std;
 
-#define TOLERANCE 1e-4
+#define TOLERANCE        1e-4
+#define WITHOUT_NORMALS  0
+#define WITH_NORMALS     1
+#define WITH_CUSTOM_FACE 2
 
 /**
  Class representing a single ray.
@@ -158,6 +161,7 @@ class Plane : public Object {
       : point(point), normal(normal) {
     this->material = material;
   }
+  glm::vec3 getNormal() { return normal; }
   Hit intersect(Ray ray) {
     Hit hit;
     hit.hit = false;
@@ -173,14 +177,6 @@ class Plane : public Object {
         hit.distance = t;
         hit.object = this;
         hit.intersection = t * ray.direction + ray.origin;
-        // Refactor
-        // hit.hit = true;
-        // hit.normal = glm::vec3(normalMatrix * glm::vec4(normal, 0.0f));
-        // hit.normal = glm::normalize(hit.normal);
-        // hit.distance = t;
-        // hit.object = this;
-        // hit.intersection = glm::vec3(transformationMatrix * glm::vec4(t *
-        // ray.direction + ray.origin, 1.0f));
       }
     }
 
@@ -196,6 +192,9 @@ class Cone : public Object {
   Cone(Material material) {
     this->material = material;
     plane = new Plane(glm::vec3(0, 1, 0), glm::vec3(0.0, 1, 0));
+  }
+  ~Cone() {
+    delete plane;
   }
   Hit intersect(Ray ray) {
     Hit hit;
@@ -261,6 +260,9 @@ class Triangle : public Object {
     plane = new Plane(p1, normal, material);
     this->material = material;
   }
+  ~Triangle() {
+    delete plane;
+  }
 
 Hit intersect(Ray ray) {
     Hit hit;
@@ -305,10 +307,12 @@ class Figure : public Object {
  private:
   std::vector< Triangle* > meshes;
   bool smoothShading = false;
+  int mode;
 
  public:
-  Figure(Material material) {
+  Figure(Material material, int m) {
     setMaterial(material);
+    mode = m;
     meshes.reserve(10e3);
   }
 
@@ -507,18 +511,18 @@ void sceneDefinition() {
   silver.specular = glm::vec3(1.0f, 1.0f, 1.0f);
   silver.shininess = 100.0f;
 
-  Figure* female = new Figure(silver);
-  loadMesh(female, std::string("meshes/Female_Demo.obj"), silver);
+  Figure* human = new Figure(silver, WITH_CUSTOM_FACE);
+  loadMesh(human, std::string("meshes/human.obj"), silver);
   glm::mat4 translationMatrix = glm::translate(glm::vec3(0, -3, 10));
   glm::mat4 scalingMatrix = glm::scale(glm::vec3(0.055f));
   glm::mat4 rotX = glm::rotate(glm::radians(-90.0f), glm::vec3(1, 0, 0));
   glm::mat4 rotY = glm::rotate(glm::radians(0.0f), glm::vec3(0, 1, 0));
   glm::mat4 rotZ = glm::rotate(glm::radians(180.0f), glm::vec3(0, 0, 1));
   glm::mat4 rotateMatrix = rotY * rotX * rotZ;
-  female->setTransformation(translationMatrix * rotateMatrix * scalingMatrix);
-  objects.push_back(female);
+  human->setTransformation(translationMatrix * rotateMatrix * scalingMatrix);
+  objects.push_back(human);
 
- // Figure* bunny = new Figure(silver);
+ // Figure* bunny = new Figure(silver, WITH_NORMALS);
  // loadMesh(bunny, std::string("meshes/Female_Demo.obj"), silver, false);
  // glm::mat4 translationMatrix = glm::translate(glm::vec3(0, 0, 11));
  // glm::mat4 scalingMatrix = glm::scale(glm::vec3(1.0f));
