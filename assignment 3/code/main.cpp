@@ -38,6 +38,7 @@ class Ray {
 };
 
 class Object;
+bool smoothShading = false;
 
 /**
  Structure representing the even of hitting an object
@@ -248,21 +249,29 @@ class Cone : public Object {
   }
 };
 
+
 class Triangle : public Object {
  private:
   Plane* plane;
   glm::vec3 v1;
   glm::vec3 v2;
   glm::vec3 v3;
+  std::vector<glm::vec3> n;
 
  public:
-  Triangle(glm::vec3 p1, glm::vec3 p2, glm::vec3 p3, glm::vec3 normal, Material material) : v1(p1), v2(p2), v3(p3) {
-    plane = new Plane(p1, normal, material);
+  Triangle(std::vector<glm::vec3> vertices, std::vector<glm::vec3> normals, Material material) {
+    v1 = vertices[0];
+    v2 = vertices[1];
+    v3 = vertices[2];
+    glm::vec3 normal = glm::normalize(glm::cross(v2 - v1, v3 - v1));
+    n = normals;
+    plane = new Plane(vertices[0], normal, material);
     this->material = material;
   }
   ~Triangle() {
     delete plane;
   }
+
 
 Hit intersect(Ray ray) {
     Hit hit;
@@ -295,7 +304,11 @@ Hit intersect(Ray ray) {
         hit.hit = true;
         hit.distance = t;
         hit.intersection = ray.origin + t * ray.direction;
-        hit.normal = glm::normalize(glm::cross(edge1, edge2));
+
+        if (smoothShading) {
+          float w = 1.0f - (u + v);
+          hit.normal = glm::normalize(n[0] * w + n[1] * u + n[2] * v);
+        }
         hit.object = this;
     }
     
@@ -306,7 +319,6 @@ Hit intersect(Ray ray) {
 class Figure : public Object {
  private:
   std::vector< Triangle* > meshes;
-  bool smoothShading = false;
   int mode;
 
  public:
@@ -327,8 +339,6 @@ class Figure : public Object {
     tr->setMaterial(this->material);
     meshes.push_back(tr);
   }
-  void setSmooth(bool smooth) { smoothShading = smooth; }
-  bool getSmoothShading() { return smoothShading; }
 
   Hit intersect(Ray ray) {
     Hit closest_hit;
@@ -451,8 +461,16 @@ void processFace(Figure* figure, std::istringstream& iss, std::vector<glm::vec3>
   }
 
   if (vIndices.size() == 3 && nIndices.size() == 3) {
-    glm::vec3 normal = (normals[nIndices[0]] + normals[nIndices[1]] + normals[nIndices[2]]) / 3.0f;
-    figure->addMesh(new Triangle(vertices[vIndices[0]], vertices[vIndices[1]], vertices[vIndices[2]], normal, mat));
+    std::vector<glm::vec3> n;
+    n.push_back(normals[nIndices[0]]);
+    n.push_back(normals[nIndices[1]]);
+    n.push_back(normals[nIndices[2]]);
+
+    std::vector<glm::vec3> v;
+    v.push_back(vertices[vIndices[0]]);
+    v.push_back(vertices[vIndices[1]]);
+    v.push_back(vertices[vIndices[2]]);
+    figure->addMesh(new Triangle(v, n, mat));
   } else {
     std::cerr << "Warning: #indices - " << vIndices.size();
     std::cerr << " #normals - " << nIndices.size() << endl;
@@ -493,7 +511,7 @@ void loadMesh(Figure* figure, std::string filename, Material material) {
 		} else if (token == "s") {
 			bool smooth;
 			iss >> smooth;
-			figure->setSmooth(smooth);
+			smoothShading = smooth;
 		}
 	}
 
@@ -568,57 +586,110 @@ glm::vec3 toneMapping(glm::vec3 intensity) {
   return glm::clamp(alpha * glm::pow(intensity, glm::vec3(gamma)), glm::vec3(0.0), glm::vec3(1.0));
 }
 
+#include <thread>
+#include <mutex>
+#include <vector>
+#include <atomic>
+
+// Thread-safe counter for progress tracking
+std::atomic<int> pixels_rendered(0);
+
+void renderTile(int startX, int endX, int startY, int endY, Image& image, 
+                float s, float X, float Y, int width, int height) {
+    for (int i = startX; i < endX; i++) {
+        for (int j = startY; j < endY; j++) {
+            float dx = X + i * s + s / 2;
+            float dy = Y - j * s - s / 2;
+            float dz = 1;
+
+            glm::vec3 origin(0, 0, 0);
+            glm::vec3 direction(dx, dy, dz);
+            direction = glm::normalize(direction);
+
+            Ray ray(origin, direction);
+            image.setPixel(i, j, toneMapping(trace_ray(ray)));
+            
+            // Optional: progress tracking
+            pixels_rendered++;
+        }
+    }
+}
+
+void printProgress(int totalPixels) {
+    while (pixels_rendered < totalPixels) {
+        float progress = (float)pixels_rendered / totalPixels * 100.0f;
+        std::cout << "\rRendering: " << progress << "% (" << pixels_rendered << "/" << totalPixels << ")" << std::flush;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    std::cout << "\rRendering: 100% (" << totalPixels << "/" << totalPixels << ")" << std::endl;
+}
+
 int main(int argc, const char* argv[]) {
-  clock_t t = clock();  // variable for keeping the time of the rendering
+    clock_t t = clock();
 
-  int width = 1024/4;  // width of the image
-  int height = 768/4;  // height of the image
-  float fov = 90;    // field of view
+    int width = 1024/4;
+    int height = 768/4;
+    float fov = 90;
 
-  sceneDefinition();  // Let's define a scene
+    sceneDefinition();
 
-  Image image(width, height);  // Create an image where we will store the result
-  vector< glm::vec3 > image_values(width * height);
+    Image image(width, height);
+    
+    float s = 2 * tan(0.5 * fov / 180 * M_PI) / width;
+    float X = -s * width / 2;
+    float Y = s * height / 2;
 
-  float s = 2 * tan(0.5 * fov / 180 * M_PI) / width;
-  float X = -s * width / 2;
-  float Y = s * height / 2;
+    // Determine number of threads
+    unsigned int numThreads = std::thread::hardware_concurrency();
+    if (numThreads == 0) numThreads = 4; // Fallback
+    std::cout << "Using " << numThreads << " threads" << std::endl;
 
-  for (int i = 0; i < width; i++)
-    for (int j = 0; j < height; j++) {
-      float dx = X + i * s + s / 2;
-      float dy = Y - j * s - s / 2;
-      float dz = 1;
+    // Option 1: Split by columns (better cache locality)
+    std::vector<std::thread> threads;
+    int tileWidth = width / numThreads;
+    
+    // Start progress thread
+    std::thread progressThread(printProgress, width * height);
 
-      glm::vec3 origin(0, 0, 0);
-      glm::vec3 direction(dx, dy, dz);
-      direction = glm::normalize(direction);
-
-      Ray ray(origin, direction);
-      image.setPixel(i, j, toneMapping(trace_ray(ray)));
+    // Launch render threads
+    for (int t = 0; t < numThreads; t++) {
+        int startX = t * tileWidth;
+        int endX = (t == numThreads - 1) ? width : (t + 1) * tileWidth;
+        
+        threads.emplace_back(renderTile, startX, endX, 0, height, 
+                           std::ref(image), s, X, Y, width, height);
     }
 
-  t = clock() - t;
-  cout << "It took " << ((float)t) / CLOCKS_PER_SEC
-       << " seconds to render the image." << endl;
-  cout << "I could render at " << (float)CLOCKS_PER_SEC / ((float)t)
-       << " frames per second." << endl;
+    // Wait for all threads to complete
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    
+    // Wait for progress thread to finish
+    progressThread.join();
 
-  // Writing the final results of the rendering
-  if (argc == 2) {
-    image.writeImage(argv[1]);
-  } else {
-    image.writeImage("./result.ppm");
-  }
+    t = clock() - t;
+    std::cout << "It took " << ((float)t) / CLOCKS_PER_SEC
+              << " seconds to render the image." << std::endl;
+    std::cout << "I could render at " << (float)CLOCKS_PER_SEC / ((float)t)
+              << " frames per second." << std::endl;
 
-  for (Object* obj : objects) {
-    delete obj;
-  }
-  objects.clear();
-  for (Light* light : lights) {
-    delete light;
-  }
-  lights.clear();
+    // Writing the final results
+    if (argc == 2) {
+        image.writeImage(argv[1]);
+    } else {
+        image.writeImage("./result.ppm");
+    }
 
-  return 0;
+    // Cleanup
+    for (Object* obj : objects) {
+        delete obj;
+    }
+    objects.clear();
+    for (Light* light : lights) {
+        delete light;
+    }
+    lights.clear();
+
+    return 0;
 }
