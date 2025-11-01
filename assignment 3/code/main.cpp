@@ -430,6 +430,31 @@ glm::vec3 trace_ray(Ray ray) {
   return color;
 }
 
+void processFace(Figure* figure, std::istringstream& iss, std::vector<glm::vec3> &normals, std::vector<glm::vec3> &vertices, Material mat) {
+  std::string faceData;
+  std::vector< int > vIndices;
+  std::vector< int > nIndices;
+
+  while (iss >> faceData) {
+    std::replace(faceData.begin(), faceData.end(), '/', ' ');
+    std::istringstream faceStream(faceData);
+
+    int v, t, n;
+    if (faceStream >> v >> t >> n) {
+      vIndices.push_back(v);
+      nIndices.push_back(n);
+    }
+  }
+
+  if (vIndices.size() == 3 && nIndices.size() == 3) {
+    glm::vec3 normal = (normals[nIndices[0]] + normals[nIndices[1]] + normals[nIndices[2]]) / 3.0f;
+    figure->addMesh(new Triangle(vertices[vIndices[0]], vertices[vIndices[1]], vertices[vIndices[2]], normal, mat));
+  } else {
+    std::cerr << "Warning: #indices - " << vIndices.size();
+    std::cerr << " #normals - " << nIndices.size() << endl;
+  }
+}
+
 void loadMesh(Figure* figure, std::string filename, Material material) {
 	std::string line;
 	ifstream file(filename);
@@ -459,30 +484,8 @@ void loadMesh(Figure* figure, std::string filename, Material material) {
 			iss >> normal.x >> normal.y >> normal.z;
 			normals.push_back(normal);
 		} else if (token == "f") {
-			std::string faceData;
-			std::vector<int> vIndices;
-			std::vector<int> nIndices;
-
-			while (iss >> faceData) {
-        std::replace(faceData.begin(), faceData.end(), '/', ' ');
-        std::istringstream faceStream(faceData);
-        
-        int v, t, n;
-        if (faceStream >> v >> t >> n) {
-				  vIndices.push_back(v);
-				  nIndices.push_back(n);
-        }
-			}
-
-			if (vIndices.size() == 3 && nIndices.size() == 3) {
-				glm::vec3 normal = (normals[nIndices[0]] + normals[nIndices[1]] + normals[nIndices[2]]) / 3.0f;
-				figure->addMesh(new Triangle(vertices[vIndices[0]], vertices[vIndices[1]], vertices[vIndices[2]], normal, material));
-        faces++;
-			} else {
-				std::cerr << "Warning: #indices - " << vIndices.size();
-				std::cerr << " #normals - " << nIndices.size() << endl;
-			}
-
+      processFace(figure, iss, normals, vertices, material);
+      ++faces;
 		} else if (token == "s") {
 			bool smooth;
 			iss >> smooth;
@@ -535,18 +538,6 @@ void sceneDefinition() {
   green_diffuse.ambient = glm::vec3(0.03f, 0.1f, 0.03f);
   green_diffuse.diffuse = glm::vec3(0.3f, 1.0f, 0.3f);
 
-  Material red_specular;
-  red_specular.diffuse = glm::vec3(1.0f, 0.2f, 0.2f);
-  red_specular.ambient = glm::vec3(0.01f, 0.02f, 0.02f);
-  red_specular.specular = glm::vec3(0.5);
-  red_specular.shininess = 10.0;
-
-  Material blue_specular;
-  blue_specular.ambient = glm::vec3(0.02f, 0.02f, 0.1f);
-  blue_specular.diffuse = glm::vec3(0.2f, 0.2f, 1.0f);
-  blue_specular.specular = glm::vec3(0.6);
-  blue_specular.shininess = 100.0;
-
   lights.push_back(new Light(glm::vec3(0, 26, 5), glm::vec3(1.0, 1.0, 1.0)));
   lights.push_back(new Light(glm::vec3(0, 1, 12), glm::vec3(0.1)));
   lights.push_back(new Light(glm::vec3(0, 5, 1), glm::vec3(0.4)));
@@ -576,8 +567,8 @@ glm::vec3 toneMapping(glm::vec3 intensity) {
 int main(int argc, const char* argv[]) {
   clock_t t = clock();  // variable for keeping the time of the rendering
 
-  int width = 1024/2;  // width of the image
-  int height = 768/2;  // height of the image
+  int width = 1024/4;  // width of the image
+  int height = 768/4;  // height of the image
   float fov = 90;    // field of view
 
   sceneDefinition();  // Let's define a scene
