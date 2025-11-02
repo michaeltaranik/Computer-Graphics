@@ -23,6 +23,7 @@ using namespace std;
 #define WITHOUT_NORMALS  0
 #define WITH_NORMALS     1
 #define WITH_CUSTOM_FACE 2
+#define MAX_RECURSION_DEPTH 5
 
 /**
  Class representing a single ray.
@@ -341,6 +342,7 @@ class Triangle : public Object {
     this->material = material;
   }
   void setSmooth(bool s) { smoothShading = s; }
+  void setMirror(bool s) { this->material.shininess = -1.0f; }
   glm::vec3 getV1() const { return v1; }
   glm::vec3 getV2() const { return v2; }
   glm::vec3 getV3() const { return v3; }
@@ -428,7 +430,7 @@ Hit intersect(Ray ray) {
     
     // At this stage, we can compute t to find out where the intersection point is on the line
     float t = f * glm::dot(edge2, q);
-    
+  
     if (t > TOLERANCE) {
         hit.hit = true;
         hit.distance = t;
@@ -488,6 +490,11 @@ class Figure : public Object {
   }
 
   int getMode() { return mode; }
+  void setMirror(bool s) {
+    for (auto tr : meshes) {
+      tr->setMirror(s);
+    }
+  }
   void setSmooth(bool s) {
     for (auto tr : meshes) {
       tr->setSmooth(s);
@@ -674,7 +681,7 @@ glm::vec3 PhongModel(glm::vec3 point, glm::vec3 normal,
  @param ray Ray that should be traced through the scene
  @return Color at the intersection point
  */
-glm::vec3 trace_ray(Ray ray) {
+glm::vec3 trace_ray(Ray ray, int depth) {
   Hit closest_hit;
 
   closest_hit.hit = false;
@@ -688,9 +695,15 @@ glm::vec3 trace_ray(Ray ray) {
 
   glm::vec3 color(0.0);
   if (closest_hit.hit) {
-    color = PhongModel(closest_hit.intersection, closest_hit.normal,
-                       glm::normalize(-ray.direction),
-                       closest_hit.object->getMaterial());
+    if (depth < MAX_RECURSION_DEPTH && closest_hit.object->getMaterial().shininess < 0.0f) {
+      glm::vec3 reflectedDirection = glm::reflect(glm::normalize(ray.direction), glm::normalize(closest_hit.normal));
+      Ray reflectionRay(closest_hit.intersection + glm::vec3(TOLERANCE) * reflectedDirection, reflectedDirection);
+      color = trace_ray(reflectionRay, depth + 1);
+    } else {
+      color = PhongModel(closest_hit.intersection, closest_hit.normal,
+                         glm::normalize(-ray.direction),
+                         closest_hit.object->getMaterial());
+    }
   } else {
     color = glm::vec3(0.0, 0.0, 0.0);
   }
@@ -802,7 +815,7 @@ void processFace(Figure* figure, istringstream& iss,
     }
 }
 
-void loadMesh(Figure* figure, string filename, Material material) {
+void loadMesh(Figure* figure, string filename) {
 	string line;
 	ifstream file(filename);
 
@@ -831,7 +844,7 @@ void loadMesh(Figure* figure, string filename, Material material) {
 			iss >> normal.x >> normal.y >> normal.z;
 			normals.push_back(normal);
 		} else if (token == "f") {
-      processFace(figure, iss, normals, vertices, material);
+      processFace(figure, iss, normals, vertices, figure->getMaterial());
       ++faces;
 		} else if (token == "s") {
 			bool smooth;
@@ -855,7 +868,7 @@ void sceneDefinition() {
   silver.shininess = 100.0f;
 
   Figure* human = new Figure(silver, WITH_CUSTOM_FACE);
-  loadMesh(human, string("meshes/human.obj"), silver);
+  loadMesh(human, string("meshes/human.obj"));
   human->buildBVH();
   glm::mat4 translationMatrix = glm::translate(glm::vec3(0, -3, 6));
   glm::mat4 scalingMatrix = glm::scale(glm::vec3(0.035f));
@@ -866,8 +879,10 @@ void sceneDefinition() {
   human->setTransformation(translationMatrix * rotateMatrix * scalingMatrix);
   objects.push_back(human);
 
-  Figure* bunny = new Figure(silver, WITHOUT_NORMALS);
-  loadMesh(bunny, string("meshes/bunny.obj"), silver);
+  Material mirror;
+  mirror.shininess = -1.0f;
+  Figure* bunny = new Figure(mirror, WITHOUT_NORMALS);
+  loadMesh(bunny, string("meshes/bunny.obj"));
   bunny->buildBVH();
   translationMatrix = glm::translate(glm::vec3(-4, -2, 7));
   scalingMatrix = glm::scale(glm::vec3(1.0f));
@@ -875,7 +890,7 @@ void sceneDefinition() {
   objects.push_back(bunny);
 
   Figure* bunny_with_normals = new Figure(silver, WITH_NORMALS);
-  loadMesh(bunny_with_normals, string("meshes/bunny_with_normals.obj"), silver);
+  loadMesh(bunny_with_normals, string("meshes/bunny_with_normals.obj"));
   bunny_with_normals->buildBVH();
   translationMatrix = glm::translate(glm::vec3(4, -2, 6));
   scalingMatrix = glm::scale(glm::vec3(1.0f));
@@ -884,7 +899,7 @@ void sceneDefinition() {
   objects.push_back(bunny_with_normals);
 
   Figure* armadillo_with_normals = new Figure(silver, WITH_NORMALS);
-  loadMesh(armadillo_with_normals, string("meshes/armadillo_with_normals.obj"), silver);
+  loadMesh(armadillo_with_normals, string("meshes/armadillo_with_normals.obj"));
   armadillo_with_normals->buildBVH();
   translationMatrix = glm::translate(glm::vec3(-3, -2, 9));
   scalingMatrix = glm::scale(glm::vec3(1.0f));
@@ -894,7 +909,7 @@ void sceneDefinition() {
   objects.push_back(armadillo_with_normals);
 
   Figure* lucy_with_normals = new Figure(silver, WITH_NORMALS);
-  loadMesh(lucy_with_normals, string("meshes/lucy_with_normals.obj"), silver);
+  loadMesh(lucy_with_normals, string("meshes/lucy_with_normals.obj"));
   lucy_with_normals->buildBVH();
   translationMatrix = glm::translate(glm::vec3(3, -2, 9));
   scalingMatrix = glm::scale(glm::vec3(1.0f));
@@ -949,7 +964,7 @@ void renderTile(int startX, int endX, int startY, int endY, Image& image,
             direction = glm::normalize(direction);
 
             Ray ray(origin, direction);
-            image.setPixel(i, j, toneMapping(trace_ray(ray)));
+            image.setPixel(i, j, toneMapping(trace_ray(ray, 0)));
             
             pixels_rendered++;
         }
@@ -968,8 +983,8 @@ void printProgress(int totalPixels) {
 int main(int argc, const char* argv[]) {
     auto t0 = chrono::high_resolution_clock::now();
 
-    int width = 1024;
-    int height = 768;
+    int width = 1024*2;
+    int height = 768*2;
     float fov = 90;
 
     sceneDefinition();
