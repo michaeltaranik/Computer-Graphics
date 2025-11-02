@@ -19,10 +19,10 @@
 
 using namespace std;
 
-#define TOLERANCE        1e-4
-#define WITHOUT_NORMALS  0
-#define WITH_NORMALS     1
-#define WITH_CUSTOM_FACE 2
+#define TOLERANCE           1e-4
+#define WITHOUT_NORMALS     0
+#define WITH_NORMALS        1
+#define WITH_CUSTOM_FACE    2
 #define MAX_RECURSION_DEPTH 5
 
 /**
@@ -145,7 +145,7 @@ public:
     BoundingBox bbox;
     BVHNode* left = nullptr;
     BVHNode* right = nullptr;
-    vector<Triangle*> triangles;  // Only leaf nodes have triangles
+    vector<Triangle*> triangles;  // only leaf nodes have triangles
     
     bool isLeaf() const { return left == nullptr && right == nullptr; }
     
@@ -415,7 +415,7 @@ Hit intersect(Ray ray) {
     glm::vec3 h = glm::cross(ray.direction, edge2);
     float a = glm::dot(edge1, h);
     
-    if (fabs(a) < TOLERANCE) return hit; // Ray parallel to triangle
+    if (fabs(a) < TOLERANCE) return hit; // ray parallel to triangle
     
     float f = 1.0f / a;
     glm::vec3 s = ray.origin - v1;
@@ -428,7 +428,7 @@ Hit intersect(Ray ray) {
     
     if (v < 0.0f || u + v > 1.0f) return hit;
     
-    // At this stage, we can compute t to find out where the intersection point is on the line
+    // compute t to find out where the intersection point is on the line
     float t = f * glm::dot(edge2, q);
   
     if (t > TOLERANCE) {
@@ -478,7 +478,7 @@ class Figure : public Object {
   void buildBVH() {
     if (meshes.empty()) return;
 
-    vector< Triangle* > triangles = meshes;  // Copy for building
+    vector< Triangle* > triangles = meshes;  // copy for building
     bvhRoot = buildBVHNode(triangles, 0, triangles.size(), 0);
     cout << "BVH built for figure with " << meshes.size() << " triangles"
          << endl;
@@ -511,11 +511,10 @@ class Figure : public Object {
     localDirection = glm::normalize(localDirection);
     Ray localRay(localOrigin, localDirection);
 
-    // Use BVH if available, otherwise fall back to brute force
+    // use BVH if available, otherwise fall back to brute force
     if (bvhRoot) {
       closest_hit = intersectBVH(bvhRoot, localRay);
     } else {
-      // Brute force fallback
       for (Triangle* triangle : meshes) {
         Hit hit = triangle->intersect(localRay);
         if (hit.hit && hit.distance < closest_hit.distance) {
@@ -543,31 +542,29 @@ class Figure : public Object {
     return bbox;
   }
 
-  BVHNode* buildBVHNode(vector< Triangle* >& triangles, int start, int end,
-                        int depth) {
+  BVHNode* buildBVHNode(vector< Triangle* >& triangles, int start, int end, int depth) {
     BVHNode* node = new BVHNode();
 
-    // Compute bounding box for all triangles in this node
     for (int i = start; i < end; i++) {
       node->bbox.expand(computeTriangleBBox(triangles[i]));
     }
 
     int triangleCount = end - start;
 
-    // Leaf node condition: few triangles or max depth
+    // leaf node condition: few triangles or max depth
     if (triangleCount <= 4 || depth >= 20) {
       node->triangles.insert(node->triangles.end(), triangles.begin() + start,
                              triangles.begin() + end);
       return node;
     }
 
-    // Choose split axis (longest axis)
+    // choose split axis (longest axis)
     glm::vec3 extent = node->bbox.max - node->bbox.min;
     int axis = (extent.x > extent.y && extent.x > extent.z) ? 0
                : (extent.y > extent.z)                      ? 1
                                                             : 2;
 
-    // Sort triangles along the chosen axis
+    // sort triangles along the chosen axis
     auto comparator = [this, axis](Triangle* a, Triangle* b) {
       return computeTriangleBBox(a).getCenter()[axis] <
              computeTriangleBBox(b).getCenter()[axis];
@@ -577,7 +574,7 @@ class Figure : public Object {
     std::nth_element(triangles.begin() + start, triangles.begin() + mid,
                      triangles.begin() + end, comparator);
 
-    // Recursively build child nodes
+    // build child nodes
     node->left = buildBVHNode(triangles, start, mid, depth + 1);
     node->right = buildBVHNode(triangles, mid, end, depth + 1);
 
@@ -592,7 +589,7 @@ class Figure : public Object {
     }
 
     if (node->isLeaf()) {
-      // Check all triangles in leaf node
+      // check all triangles in leaf node
       Hit closest_hit;
       closest_hit.distance = INFINITY;
       closest_hit.hit = false;
@@ -720,12 +717,12 @@ FaceData parseFaceToken(const string& faceData, Figure* figure) {
 
     switch (figure->getMode()) {
       case WITH_CUSTOM_FACE: {
-        // Format: v/t/n - replace all slashes with spaces
+        // format: v/t/n - replace all slashes with spaces
         replace(processed.begin(), processed.end(), '/', ' ');
         break;
       }
       case WITH_NORMALS: {
-        // Format: v//n - replace double slash with space
+        // format: v//n - replace double slash with space
         size_t pos = processed.find("//");
         if (pos != string::npos) {
           processed.replace(pos, 2, " ");
@@ -733,7 +730,7 @@ FaceData parseFaceToken(const string& faceData, Figure* figure) {
         break;
       }
       default:
-        // Format: v - no processing needed
+        // format: v - no processing needed
         break;
     }
 
@@ -903,8 +900,6 @@ void sceneDefinition() {
   armadillo_with_normals->buildBVH();
   translationMatrix = glm::translate(glm::vec3(-3, -2, 9));
   scalingMatrix = glm::scale(glm::vec3(1.0f));
-  //glm::mat4 rotatearmadilloY = glm::rotate(glm::radians(90.0f), glm::vec3(0, 1, 0));
-  //armadillo_with_normals->setTransformation(translationMatrix * rotatearmadilloY * scalingMatrix);
   armadillo_with_normals->setTransformation(translationMatrix * scalingMatrix);
   objects.push_back(armadillo_with_normals);
 
@@ -913,8 +908,6 @@ void sceneDefinition() {
   lucy_with_normals->buildBVH();
   translationMatrix = glm::translate(glm::vec3(3, -2, 9));
   scalingMatrix = glm::scale(glm::vec3(1.0f));
-  //glm::mat4 rotatelucyY = glm::rotate(glm::radians(90.0f), glm::vec3(0, 1, 0));
-  //lucy_with_normals->setTransformation(translationMatrix * rotatelucyY * scalingMatrix);
   lucy_with_normals->setTransformation(translationMatrix * scalingMatrix);
   objects.push_back(lucy_with_normals);
 
@@ -948,7 +941,7 @@ glm::vec3 toneMapping(glm::vec3 intensity) {
   return glm::clamp(alpha * glm::pow(intensity, glm::vec3(gamma)), glm::vec3(0.0), glm::vec3(1.0));
 }
 
-// Thread-safe counter for progress tracking
+// atomic counter for progress
 atomic<int> pixels_rendered(0);
 
 void renderTile(int startX, int endX, int startY, int endY, Image& image, 
@@ -995,19 +988,18 @@ int main(int argc, const char* argv[]) {
     float X = -s * width / 2;
     float Y = s * height / 2;
 
-    // Determine number of threads
     unsigned int numThreads = thread::hardware_concurrency();
     if (numThreads == 0) numThreads = 4; // Fallback
     cout << "Using " << numThreads << " threads" << endl;
 
-    // Split by columns (better cache locality)
+    // better cache locality, split by columns
     vector<thread> threads;
     int tileWidth = width / numThreads;
     
-    // Start progress thread
+    // progress thread
     thread progressThread(printProgress, width * height);
 
-    // Launch render threads
+    // render threads
     for (int t = 0; t < numThreads; t++) {
         int startX = t * tileWidth;
         int endX = (t == numThreads - 1) ? width : (t + 1) * tileWidth;
@@ -1015,12 +1007,10 @@ int main(int argc, const char* argv[]) {
         threads.emplace_back(renderTile, startX, endX, 0, height, ref(image), s, X, Y, width, height);
     }
 
-    // Wait for all threads to complete
     for (auto& thread : threads) {
         thread.join();
     }
     
-    // Wait for progress thread to finish
     progressThread.join();
 
     auto t1 = chrono::high_resolution_clock::now();
@@ -1037,7 +1027,7 @@ int main(int argc, const char* argv[]) {
         image.writeImage("./result.ppm");
     }
 
-    // Cleanup
+    // cleanup
     for (Object* obj : objects) {
         delete obj;
     }
