@@ -293,7 +293,60 @@ Hit intersect(Ray ray) {
     hit.hit = false;
     hit.distance = INFINITY;
 
-    // Moller-Trumbore algorithm
+    /*
+    // Plane intersection
+    // y(t) = o + td;
+    // <y(t) - v1, normal> = 0
+    // <o - v1 + td, normal> = 0
+    // <o - v1, normal> + <td, normal> = 0
+    // t*<d, normal> = <v1 - o, normal>
+    // t = <v1 - o, normal> / <d, normal>
+    // float denominator = glm::dot(ray.direction, normal);
+
+    Hit planeHit = plane->intersect(ray);
+    if (!planeHit.hit) return hit;
+
+    glm::vec3 A = v2 - v1;
+    glm::vec3 B = v3 - v1;
+    glm::vec3 C = planeHit.intersection - v1;
+
+    float dot_AA = glm::dot(A, A);   
+    float dot_BB = glm::dot(B, B);   
+    float dot_AB = glm::dot(A, B);  
+    float dot_CA = glm::dot(C, A);   
+    float dot_CB = glm::dot(C, B);   
+
+    // Compute the determinant (related to parallelogram area)
+    // area = ||A x B||
+    // area^2 = ||A x B||^2
+    // area^2 = ||A x B|| * ||A x B||
+    // Lagrange's identity: ||A||^2 * ||B||^2 - ||A * B||^2 = ||A X B||,
+    // therefore area^2 (i.e. parallelogram area squared a.k.a.
+    // determinant) = ||A x B||^2 = (A*A) * (B*B) - (A*B)*(A*B)
+    float det = dot_AA * dot_BB - dot_AB * dot_AB;
+
+    if (fabs(det) < TOLERANCE) { return hit; }
+
+    // p = v1 + u(v2-v1) + v(v3 - v1)
+    // p - v1 = uA + vB
+    // C = uA + vB
+    // CA = uAA + vBA - dot A on both sides
+    // CB = uAB + vBB - dot B on both sides
+	  // Matrix form:
+	  // [AA BA] [u] - [CA]
+	  // [AB BB] [v] - [CB]
+    // Using Cramer's rule
+    float u = (dot_CA * dot_BB - dot_CB * dot_AB) / det;
+    float v = (dot_AA * dot_CB - dot_CA * dot_AB) / det;
+    float y = 1.0f - u - v;
+
+    if (u >= -TOLERANCE && v >= -TOLERANCE && y >= -TOLERANCE &&
+        u <= 1.0f + TOLERANCE && v <= 1.0f + TOLERANCE &&
+        y <= 1.0f + TOLERANCE) {
+      if (fabs(u + v + y - 1.0f) < TOLERANCE * 3.0f) {
+    */
+
+    // Moller-Trumbore algorithm, more numerically stable
     glm::vec3 edge1 = v2 - v1;
     glm::vec3 edge2 = v3 - v1;
     glm::vec3 h = glm::cross(ray.direction, edge2);
