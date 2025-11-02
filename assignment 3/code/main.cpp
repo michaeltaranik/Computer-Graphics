@@ -642,6 +642,17 @@ glm::vec3 PhongModel(glm::vec3 point, glm::vec3 normal,
     glm::vec3 light_direction = glm::normalize(lights[light_num]->position - point);
     glm::vec3 reflected_direction = glm::reflect(-light_direction, normal);
 
+    bool in_shadow = false;
+    Ray shadowRay(point + (normal * glm::vec3(TOLERANCE)), light_direction);
+    for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
+      Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
+      if (shadow_hit.hit && shadow_hit.distance < glm::distance(lights[light_num]->position, point)) {
+        in_shadow = true;
+        break;
+      }
+    }
+
+    if (in_shadow) continue;
     float NdotL = glm::clamp(glm::dot(normal, light_direction), 0.0f, 1.0f);
     float VdotR = glm::clamp(glm::dot(view_direction, reflected_direction), 0.0f, 1.0f);
 
