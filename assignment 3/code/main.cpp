@@ -94,6 +94,66 @@ class Object {
   }
 };
 
+class Triangle;
+class BoundingBox {
+public:
+    glm::vec3 min;
+    glm::vec3 max;
+    
+    BoundingBox() : min(glm::vec3(INFINITY)), max(glm::vec3(-INFINITY)) {}
+    BoundingBox(glm::vec3 min, glm::vec3 max) : min(min), max(max) {}
+    
+    void expand(const glm::vec3& point) {
+        min = glm::min(min, point);
+        max = glm::max(max, point);
+    }
+    
+    void expand(const BoundingBox& other) {
+        min = glm::min(min, other.min);
+        max = glm::max(max, other.max);
+    }
+    
+    bool intersect(const Ray& ray) const {
+        // Fast Ray-AABB intersection
+        glm::vec3 invDir = 1.0f / ray.direction;
+        glm::vec3 t1 = (min - ray.origin) * invDir;
+        glm::vec3 t2 = (max - ray.origin) * invDir;
+        
+        glm::vec3 tmin = glm::min(t1, t2);
+        glm::vec3 tmax = glm::max(t1, t2);
+        
+        float t_min = glm::max(glm::max(tmin.x, tmin.y), tmin.z);
+        float t_max = glm::min(glm::min(tmax.x, tmax.y), tmax.z);
+        
+        return t_max >= glm::max(t_min, 0.0f);
+    }
+    
+    float getSurfaceArea() const {
+        glm::vec3 extent = max - min;
+        return 2.0f * (extent.x * extent.y + extent.x * extent.z + extent.y * extent.z);
+    }
+    
+    glm::vec3 getCenter() const {
+        return (min + max) * 0.5f;
+    }
+};
+
+
+class BVHNode {
+public:
+    BoundingBox bbox;
+    BVHNode* left = nullptr;
+    BVHNode* right = nullptr;
+    vector<Triangle*> triangles;  // Only leaf nodes have triangles
+    
+    bool isLeaf() const { return left == nullptr && right == nullptr; }
+    
+    ~BVHNode() {
+        delete left;
+        delete right;
+    }
+};
+
 /**
  Implementation of the class Object for sphere shape.
  */
@@ -280,9 +340,10 @@ class Triangle : public Object {
     plane = new Plane(vertices[0], normal, material);
     this->material = material;
   }
-  void setSmooth(bool s) {
-    smoothShading = s;
-  }
+  void setSmooth(bool s) { smoothShading = s; }
+  glm::vec3 getV1() const { return v1; }
+  glm::vec3 getV2() const { return v2; }
+  glm::vec3 getV3() const { return v3; }
   ~Triangle() {
     delete plane;
   }
@@ -395,6 +456,7 @@ class Figure : public Object {
  private:
   vector< Triangle* > meshes;
   int mode;
+  BVHNode* bvhRoot = nullptr;
 
  public:
   Figure(Material material, int m) {
@@ -404,11 +466,21 @@ class Figure : public Object {
   }
 
   ~Figure() {
+    delete bvhRoot;
     for (Triangle* triangle : meshes) {
         delete triangle;
     }
     meshes.clear();
-}
+  }
+
+  void buildBVH() {
+    if (meshes.empty()) return;
+
+    vector< Triangle* > triangles = meshes;  // Copy for building
+    bvhRoot = buildBVHNode(triangles, 0, triangles.size(), 0);
+    cout << "BVH built for figure with " << meshes.size() << " triangles"
+         << endl;
+  }
 
   void addMesh(Triangle* tr) {
     tr->setMaterial(this->material);
@@ -432,11 +504,17 @@ class Figure : public Object {
     localDirection = glm::normalize(localDirection);
     Ray localRay(localOrigin, localDirection);
 
-    for (Triangle* triangle : meshes) {
-      Hit hit = triangle->intersect(localRay);
-      if (hit.hit && hit.distance < closest_hit.distance) {
-        closest_hit = hit;
-        closest_hit.object = this;
+    // Use BVH if available, otherwise fall back to brute force
+    if (bvhRoot) {
+      closest_hit = intersectBVH(bvhRoot, localRay);
+    } else {
+      // Brute force fallback
+      for (Triangle* triangle : meshes) {
+        Hit hit = triangle->intersect(localRay);
+        if (hit.hit && hit.distance < closest_hit.distance) {
+          closest_hit = hit;
+          closest_hit.object = this;
+        }
       }
     }
 
@@ -447,6 +525,88 @@ class Figure : public Object {
         closest_hit.distance = glm::length(closest_hit.intersection - ray.origin);
     }
     return closest_hit;
+  }
+
+ private:
+  BoundingBox computeTriangleBBox(Triangle* triangle) {
+    BoundingBox bbox;
+    bbox.expand(triangle->getV1());
+    bbox.expand(triangle->getV2());
+    bbox.expand(triangle->getV3());
+    return bbox;
+  }
+
+  BVHNode* buildBVHNode(vector< Triangle* >& triangles, int start, int end,
+                        int depth) {
+    BVHNode* node = new BVHNode();
+
+    // Compute bounding box for all triangles in this node
+    for (int i = start; i < end; i++) {
+      node->bbox.expand(computeTriangleBBox(triangles[i]));
+    }
+
+    int triangleCount = end - start;
+
+    // Leaf node condition: few triangles or max depth
+    if (triangleCount <= 4 || depth >= 20) {
+      node->triangles.insert(node->triangles.end(), triangles.begin() + start,
+                             triangles.begin() + end);
+      return node;
+    }
+
+    // Choose split axis (longest axis)
+    glm::vec3 extent = node->bbox.max - node->bbox.min;
+    int axis = (extent.x > extent.y && extent.x > extent.z) ? 0
+               : (extent.y > extent.z)                      ? 1
+                                                            : 2;
+
+    // Sort triangles along the chosen axis
+    auto comparator = [this, axis](Triangle* a, Triangle* b) {
+      return computeTriangleBBox(a).getCenter()[axis] <
+             computeTriangleBBox(b).getCenter()[axis];
+    };
+
+    int mid = start + (end - start) / 2;
+    std::nth_element(triangles.begin() + start, triangles.begin() + mid,
+                     triangles.begin() + end, comparator);
+
+    // Recursively build child nodes
+    node->left = buildBVHNode(triangles, start, mid, depth + 1);
+    node->right = buildBVHNode(triangles, mid, end, depth + 1);
+
+    return node;
+  }
+
+  Hit intersectBVH(BVHNode* node, const Ray& localRay) {
+    if (!node->bbox.intersect(localRay)) {
+      Hit miss;
+      miss.hit = false;
+      return miss;
+    }
+
+    if (node->isLeaf()) {
+      // Check all triangles in leaf node
+      Hit closest_hit;
+      closest_hit.distance = INFINITY;
+      closest_hit.hit = false;
+
+      for (Triangle* triangle : node->triangles) {
+        Hit hit = triangle->intersect(localRay);
+        if (hit.hit && hit.distance < closest_hit.distance) {
+          closest_hit = hit;
+        }
+      }
+      return closest_hit;
+    }
+
+    // Check both children
+    Hit hit_left = intersectBVH(node->left, localRay);
+    Hit hit_right = intersectBVH(node->right, localRay);
+
+    if (!hit_left.hit) return hit_right;
+    if (!hit_right.hit) return hit_left;
+
+    return (hit_left.distance < hit_right.distance) ? hit_left : hit_right;
   }
 };
 
@@ -670,8 +830,8 @@ void loadMesh(Figure* figure, string filename, Material material) {
 	}
 
 	cout << "Finished loading mesh from: " << filename << endl;
-	cout << "Vertices: " << vertices.size() << endl;
-	cout << "Normals: " << normals.size() << endl;
+	cout << "Vertices: " << vertices.size() << "; ";
+	cout << "Normals: " << normals.size() << "; ";
 	cout << "Polygons: " << faces << endl;
 	file.close();
 }
@@ -685,6 +845,7 @@ void sceneDefinition() {
 
   Figure* human = new Figure(silver, WITH_CUSTOM_FACE);
   loadMesh(human, string("meshes/human.obj"), silver);
+  human->buildBVH();
   glm::mat4 translationMatrix = glm::translate(glm::vec3(0, -3, 6));
   glm::mat4 scalingMatrix = glm::scale(glm::vec3(0.035f));
   glm::mat4 rotX = glm::rotate(glm::radians(-90.0f), glm::vec3(1, 0, 0));
@@ -692,10 +853,11 @@ void sceneDefinition() {
   glm::mat4 rotZ = glm::rotate(glm::radians(180.0f), glm::vec3(0, 0, 1));
   glm::mat4 rotateMatrix = rotY * rotX * rotZ;
   human->setTransformation(translationMatrix * rotateMatrix * scalingMatrix);
-  //objects.push_back(human);
+  objects.push_back(human);
 
   Figure* bunny = new Figure(silver, WITHOUT_NORMALS);
   loadMesh(bunny, string("meshes/bunny.obj"), silver);
+  bunny->buildBVH();
   translationMatrix = glm::translate(glm::vec3(-4, -2, 7));
   scalingMatrix = glm::scale(glm::vec3(1.0f));
   bunny->setTransformation(translationMatrix * scalingMatrix);
@@ -703,12 +865,32 @@ void sceneDefinition() {
 
   Figure* bunny_with_normals = new Figure(silver, WITH_NORMALS);
   loadMesh(bunny_with_normals, string("meshes/bunny_with_normals.obj"), silver);
+  bunny_with_normals->buildBVH();
   translationMatrix = glm::translate(glm::vec3(4, -2, 6));
   scalingMatrix = glm::scale(glm::vec3(1.0f));
   glm::mat4 rotateBunnyY = glm::rotate(glm::radians(90.0f), glm::vec3(0, 1, 0));
   bunny_with_normals->setTransformation(translationMatrix * rotateBunnyY * scalingMatrix);
-  //bunny_with_normals->setTransformation(translationMatrix * scalingMatrix);
   objects.push_back(bunny_with_normals);
+
+  Figure* armadillo_with_normals = new Figure(silver, WITH_NORMALS);
+  loadMesh(armadillo_with_normals, string("meshes/armadillo_with_normals.obj"), silver);
+  armadillo_with_normals->buildBVH();
+  translationMatrix = glm::translate(glm::vec3(-3, -2, 9));
+  scalingMatrix = glm::scale(glm::vec3(1.0f));
+  //glm::mat4 rotatearmadilloY = glm::rotate(glm::radians(90.0f), glm::vec3(0, 1, 0));
+  //armadillo_with_normals->setTransformation(translationMatrix * rotatearmadilloY * scalingMatrix);
+  armadillo_with_normals->setTransformation(translationMatrix * scalingMatrix);
+  objects.push_back(armadillo_with_normals);
+
+  Figure* lucy_with_normals = new Figure(silver, WITH_NORMALS);
+  loadMesh(lucy_with_normals, string("meshes/lucy_with_normals.obj"), silver);
+  lucy_with_normals->buildBVH();
+  translationMatrix = glm::translate(glm::vec3(3, -2, 9));
+  scalingMatrix = glm::scale(glm::vec3(1.0f));
+  //glm::mat4 rotatelucyY = glm::rotate(glm::radians(90.0f), glm::vec3(0, 1, 0));
+  //lucy_with_normals->setTransformation(translationMatrix * rotatelucyY * scalingMatrix);
+  lucy_with_normals->setTransformation(translationMatrix * scalingMatrix);
+  objects.push_back(lucy_with_normals);
 
   Material green_diffuse;
   green_diffuse.ambient = glm::vec3(0.03f, 0.1f, 0.03f);
@@ -775,8 +957,8 @@ void printProgress(int totalPixels) {
 int main(int argc, const char* argv[]) {
     auto t0 = chrono::high_resolution_clock::now();
 
-    int width = 1024/2;
-    int height = 768/2;
+    int width = 1024;
+    int height = 768;
     float fov = 90;
 
     sceneDefinition();
