@@ -8,6 +8,9 @@
 #include <sstream>
 #include <iostream>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 #include "glm/glm.hpp"
 #include "glm/gtx/transform.hpp"
@@ -38,7 +41,6 @@ class Ray {
 };
 
 class Object;
-bool smoothShading = false;
 
 /**
  Structure representing the even of hitting an object
@@ -256,17 +258,30 @@ class Triangle : public Object {
   glm::vec3 v1;
   glm::vec3 v2;
   glm::vec3 v3;
-  std::vector<glm::vec3> n;
+  vector<glm::vec3> n;
+  bool smoothShading = false;
 
  public:
-  Triangle(std::vector<glm::vec3> vertices, std::vector<glm::vec3> normals, Material material) {
+  Triangle(vector<glm::vec3> vertices, Material material) {
+    v1 = vertices[0];
+    v2 = vertices[1];
+    v3 = vertices[2];
+    glm::vec3 normal = glm::normalize(glm::cross(v2 - v1, v3 - v1));
+    plane = new Plane(vertices[0], normal, material);
+    this->material = material;
+  }
+  Triangle(vector<glm::vec3> vertices, vector<glm::vec3> normals, Material material) {
     v1 = vertices[0];
     v2 = vertices[1];
     v3 = vertices[2];
     glm::vec3 normal = glm::normalize(glm::cross(v2 - v1, v3 - v1));
     n = normals;
+    smoothShading = true;
     plane = new Plane(vertices[0], normal, material);
     this->material = material;
+  }
+  void setSmooth(bool s) {
+    smoothShading = s;
   }
   ~Triangle() {
     delete plane;
@@ -306,8 +321,15 @@ Hit intersect(Ray ray) {
         hit.intersection = ray.origin + t * ray.direction;
 
         if (smoothShading) {
+          if (n.size() != 3) {
+            cerr << "Size of normals is: " << n.size() << endl;
+            exit(EXIT_FAILURE);
+          }
+          
           float w = 1.0f - (u + v);
           hit.normal = glm::normalize(n[0] * w + n[1] * u + n[2] * v);
+        } else {
+          hit.normal = glm::normalize(glm::cross(edge1, edge2));
         }
         hit.object = this;
     }
@@ -318,7 +340,7 @@ Hit intersect(Ray ray) {
 
 class Figure : public Object {
  private:
-  std::vector< Triangle* > meshes;
+  vector< Triangle* > meshes;
   int mode;
 
  public:
@@ -338,6 +360,13 @@ class Figure : public Object {
   void addMesh(Triangle* tr) {
     tr->setMaterial(this->material);
     meshes.push_back(tr);
+  }
+
+  int getMode() { return mode; }
+  void setSmooth(bool s) {
+    for (auto tr : meshes) {
+      tr->setSmooth(s);
+    }
   }
 
   Hit intersect(Ray ray) {
@@ -444,57 +473,129 @@ glm::vec3 trace_ray(Ray ray) {
   return color;
 }
 
-void processFace(Figure* figure, std::istringstream& iss, std::vector<glm::vec3> &normals, std::vector<glm::vec3> &vertices, Material mat) {
-  std::string faceData;
-  std::vector< int > vIndices;
-  std::vector< int > nIndices;
-
-  while (iss >> faceData) {
-    std::replace(faceData.begin(), faceData.end(), '/', ' ');
-    std::istringstream faceStream(faceData);
-
+struct FaceData {
     int v, t, n;
-    if (faceStream >> v >> t >> n) {
-      vIndices.push_back(v);
-      nIndices.push_back(n);
+};
+
+FaceData parseFaceToken(const string& faceData, Figure* figure) {
+    FaceData result = {-1, -1, -1};
+    string processed = faceData;
+
+    switch (figure->getMode()) {
+      case WITH_CUSTOM_FACE: {
+        // Format: v/t/n - replace all slashes with spaces
+        replace(processed.begin(), processed.end(), '/', ' ');
+        break;
+      }
+      case WITH_NORMALS: {
+        // Format: v//n - replace double slash with space
+        size_t pos = processed.find("//");
+        if (pos != string::npos) {
+          processed.replace(pos, 2, " ");
+        }
+        break;
+      }
+      default:
+        // Format: v - no processing needed
+        break;
     }
-  }
 
-  if (vIndices.size() == 3 && nIndices.size() == 3) {
-    std::vector<glm::vec3> n;
-    n.push_back(normals[nIndices[0]]);
-    n.push_back(normals[nIndices[1]]);
-    n.push_back(normals[nIndices[2]]);
-
-    std::vector<glm::vec3> v;
-    v.push_back(vertices[vIndices[0]]);
-    v.push_back(vertices[vIndices[1]]);
-    v.push_back(vertices[vIndices[2]]);
-    figure->addMesh(new Triangle(v, n, mat));
-  } else {
-    std::cerr << "Warning: #indices - " << vIndices.size();
-    std::cerr << " #normals - " << nIndices.size() << endl;
-  }
+    istringstream faceStream(processed);
+    
+    switch (figure->getMode()) {
+        case WITH_CUSTOM_FACE:
+            faceStream >> result.v >> result.t >> result.n;
+            break;
+        case WITH_NORMALS:
+            faceStream >> result.v >> result.n;
+            break;
+        case WITHOUT_NORMALS:
+            faceStream >> result.v;
+            break;
+    }
+    
+    return result;
 }
 
-void loadMesh(Figure* figure, std::string filename, Material material) {
-	std::string line;
+bool validateFaceData(const vector<int>& vIndices, const vector<int>& nIndices, Figure* figure) {
+    if (vIndices.size() != 3) return false;
+    
+    switch (figure->getMode()) {
+        case WITHOUT_NORMALS:
+            return true;
+        case WITH_NORMALS:
+        case WITH_CUSTOM_FACE:
+            return nIndices.size() == 3;
+        default:
+            return false;
+    }
+}
+
+vector<glm::vec3> getVertices(const vector<int>& vIndices, const vector<glm::vec3>& vertices) {
+    return {
+        vertices[vIndices[0]],
+        vertices[vIndices[1]], 
+        vertices[vIndices[2]]
+    };
+}
+
+vector<glm::vec3> getNormals(const vector<int>& nIndices, const vector<glm::vec3>& normals) {
+    return {
+        normals[nIndices[0]],
+        normals[nIndices[1]],
+        normals[nIndices[2]]
+    };
+}
+
+void processFace(Figure* figure, istringstream& iss, 
+                vector<glm::vec3>& normals, vector<glm::vec3>& vertices, 
+                Material mat) {
+    
+    vector<int> vIndices;
+    vector<int> nIndices;
+    string faceData;
+    
+    while (iss >> faceData) {
+        FaceData data = parseFaceToken(faceData, figure);
+        
+        if (data.v != -1) vIndices.push_back(data.v);
+        if (data.n != -1) nIndices.push_back(data.n);
+    }
+    
+    if (!validateFaceData(vIndices, nIndices, figure)) {
+        cerr << "Warning: #indices - " << vIndices.size();
+        cerr << " #normals - " << nIndices.size() << endl;
+        return;
+    }
+    
+    vector<glm::vec3> triangleVertices = getVertices(vIndices, vertices);
+    
+    if (figure->getMode() == WITHOUT_NORMALS) {
+        figure->addMesh(new Triangle(triangleVertices, mat));
+    } else {
+        vector<glm::vec3> triangleNormals = getNormals(nIndices, normals);
+        figure->addMesh(new Triangle(triangleVertices, triangleNormals, mat));
+    }
+}
+
+void loadMesh(Figure* figure, string filename, Material material) {
+	string line;
 	ifstream file(filename);
 
 	if (!file.is_open()) {
-		std::cerr << "Error: could not open the file: " << filename << endl;
+		cerr << "Error: could not open the file: " << filename << endl;
 		exit(1);
 	}
 
-	std::vector<glm::vec3> vertices(1, glm::vec3(0.0f));
-	std::vector<glm::vec3> normals(1, glm::vec3(0.0f));
+	vector<glm::vec3> vertices(1, glm::vec3(0.0f));
+	vector<glm::vec3> normals(1, glm::vec3(0.0f));
   int faces = 0;
 
 	while (getline(file, line)) {
 		if (line.empty() || line[0] == '#') continue;
 
-		std::istringstream iss(line);
-		std::string token;
+		istringstream iss(line);
+		string token;
 		iss >> token;
 
 		if (token == "v") {
@@ -511,14 +612,14 @@ void loadMesh(Figure* figure, std::string filename, Material material) {
 		} else if (token == "s") {
 			bool smooth;
 			iss >> smooth;
-			smoothShading = smooth;
+      figure->setSmooth(smooth);
 		}
 	}
 
-	std::cout << "Finished loading mesh from: " << filename << endl;
-	std::cout << "Vertices: " << vertices.size() << endl;
-	std::cout << "Normals: " << normals.size() << endl;
-	std::cout << "Polygons: " << faces << endl;
+	cout << "Finished loading mesh from: " << filename << endl;
+	cout << "Vertices: " << vertices.size() << endl;
+	cout << "Normals: " << normals.size() << endl;
+	cout << "Polygons: " << faces << endl;
 	file.close();
 }
 
@@ -530,31 +631,31 @@ void sceneDefinition() {
   silver.shininess = 100.0f;
 
   Figure* human = new Figure(silver, WITH_CUSTOM_FACE);
-  loadMesh(human, std::string("meshes/human.obj"), silver);
-  glm::mat4 translationMatrix = glm::translate(glm::vec3(0, -3, 10));
-  glm::mat4 scalingMatrix = glm::scale(glm::vec3(0.055f));
+  loadMesh(human, string("meshes/human.obj"), silver);
+  glm::mat4 translationMatrix = glm::translate(glm::vec3(0, -3, 6));
+  glm::mat4 scalingMatrix = glm::scale(glm::vec3(0.035f));
   glm::mat4 rotX = glm::rotate(glm::radians(-90.0f), glm::vec3(1, 0, 0));
   glm::mat4 rotY = glm::rotate(glm::radians(0.0f), glm::vec3(0, 1, 0));
   glm::mat4 rotZ = glm::rotate(glm::radians(180.0f), glm::vec3(0, 0, 1));
   glm::mat4 rotateMatrix = rotY * rotX * rotZ;
   human->setTransformation(translationMatrix * rotateMatrix * scalingMatrix);
-  objects.push_back(human);
+  //objects.push_back(human);
 
- // Figure* bunny = new Figure(silver, WITH_NORMALS);
- // loadMesh(bunny, std::string("meshes/Female_Demo.obj"), silver, false);
- // glm::mat4 translationMatrix = glm::translate(glm::vec3(0, 0, 11));
- // glm::mat4 scalingMatrix = glm::scale(glm::vec3(1.0f));
- // bunny->setTransformation(translationMatrix * scalingMatrix);
- // objects.push_back(bunny);
+  Figure* bunny = new Figure(silver, WITHOUT_NORMALS);
+  loadMesh(bunny, string("meshes/bunny.obj"), silver);
+  translationMatrix = glm::translate(glm::vec3(-4, -2, 7));
+  scalingMatrix = glm::scale(glm::vec3(1.0f));
+  bunny->setTransformation(translationMatrix * scalingMatrix);
+  objects.push_back(bunny);
 
-  //  glm::vec3 p1(-0.5f, -0.5f, 3.0f);
-  //  glm::vec3 p2(0.5f, -0.5f, 3.0f);
-  //  glm::vec3 p3(0.0f, 0.5f, 3.0f);
-  //  glm::vec3 normal(0.0f, 0.0f, -1.0f);
-  //
-  //  Triangle* triangle = new Triangle(p1, p2, p3, normal, silver);
-  //  triangle->setTransformation(translationMatrix * scalingMatrix);
-  //  objects.push_back(triangle);
+  Figure* bunny_with_normals = new Figure(silver, WITH_NORMALS);
+  loadMesh(bunny_with_normals, string("meshes/bunny_with_normals.obj"), silver);
+  translationMatrix = glm::translate(glm::vec3(4, -2, 6));
+  scalingMatrix = glm::scale(glm::vec3(1.0f));
+  glm::mat4 rotateBunnyY = glm::rotate(glm::radians(90.0f), glm::vec3(0, 1, 0));
+  bunny_with_normals->setTransformation(translationMatrix * rotateBunnyY * scalingMatrix);
+  //bunny_with_normals->setTransformation(translationMatrix * scalingMatrix);
+  objects.push_back(bunny_with_normals);
 
   Material green_diffuse;
   green_diffuse.ambient = glm::vec3(0.03f, 0.1f, 0.03f);
@@ -586,13 +687,8 @@ glm::vec3 toneMapping(glm::vec3 intensity) {
   return glm::clamp(alpha * glm::pow(intensity, glm::vec3(gamma)), glm::vec3(0.0), glm::vec3(1.0));
 }
 
-#include <thread>
-#include <mutex>
-#include <vector>
-#include <atomic>
-
 // Thread-safe counter for progress tracking
-std::atomic<int> pixels_rendered(0);
+atomic<int> pixels_rendered(0);
 
 void renderTile(int startX, int endX, int startY, int endY, Image& image, 
                 float s, float X, float Y, int width, int height) {
@@ -609,7 +705,6 @@ void renderTile(int startX, int endX, int startY, int endY, Image& image,
             Ray ray(origin, direction);
             image.setPixel(i, j, toneMapping(trace_ray(ray)));
             
-            // Optional: progress tracking
             pixels_rendered++;
         }
     }
@@ -618,17 +713,17 @@ void renderTile(int startX, int endX, int startY, int endY, Image& image,
 void printProgress(int totalPixels) {
     while (pixels_rendered < totalPixels) {
         float progress = (float)pixels_rendered / totalPixels * 100.0f;
-        std::cout << "\rRendering: " << progress << "% (" << pixels_rendered << "/" << totalPixels << ")" << std::flush;
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        cout << "\rRendering: " << progress << "% (" << pixels_rendered << "/" << totalPixels << ")" << flush;
+        this_thread::sleep_for(chrono::milliseconds(500));
     }
-    std::cout << "\rRendering: 100% (" << totalPixels << "/" << totalPixels << ")" << std::endl;
+    cout << "\rRendering: 100% (" << totalPixels << "/" << totalPixels << ")" << endl;
 }
 
 int main(int argc, const char* argv[]) {
-    clock_t t = clock();
+    auto t0 = chrono::high_resolution_clock::now();
 
-    int width = 1024/4;
-    int height = 768/4;
+    int width = 1024/2;
+    int height = 768/2;
     float fov = 90;
 
     sceneDefinition();
@@ -640,24 +735,23 @@ int main(int argc, const char* argv[]) {
     float Y = s * height / 2;
 
     // Determine number of threads
-    unsigned int numThreads = std::thread::hardware_concurrency();
+    unsigned int numThreads = thread::hardware_concurrency();
     if (numThreads == 0) numThreads = 4; // Fallback
-    std::cout << "Using " << numThreads << " threads" << std::endl;
+    cout << "Using " << numThreads << " threads" << endl;
 
-    // Option 1: Split by columns (better cache locality)
-    std::vector<std::thread> threads;
+    // Split by columns (better cache locality)
+    vector<thread> threads;
     int tileWidth = width / numThreads;
     
     // Start progress thread
-    std::thread progressThread(printProgress, width * height);
+    thread progressThread(printProgress, width * height);
 
     // Launch render threads
     for (int t = 0; t < numThreads; t++) {
         int startX = t * tileWidth;
         int endX = (t == numThreads - 1) ? width : (t + 1) * tileWidth;
-        
-        threads.emplace_back(renderTile, startX, endX, 0, height, 
-                           std::ref(image), s, X, Y, width, height);
+
+        threads.emplace_back(renderTile, startX, endX, 0, height, ref(image), s, X, Y, width, height);
     }
 
     // Wait for all threads to complete
@@ -668,13 +762,14 @@ int main(int argc, const char* argv[]) {
     // Wait for progress thread to finish
     progressThread.join();
 
-    t = clock() - t;
-    std::cout << "It took " << ((float)t) / CLOCKS_PER_SEC
-              << " seconds to render the image." << std::endl;
-    std::cout << "I could render at " << (float)CLOCKS_PER_SEC / ((float)t)
-              << " frames per second." << std::endl;
+    auto t1 = chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
+    float seconds = duration.count() / 1000.0f;
+    float fps = 1.0f / seconds;
 
-    // Writing the final results
+    std::cout << "It took " << seconds << " seconds to render the image." << std::endl;
+    std::cout << "I could render at " << fps << " frames per second." << std::endl;
+
     if (argc == 2) {
         image.writeImage(argv[1]);
     } else {
