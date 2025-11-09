@@ -597,7 +597,7 @@ glm::vec3 toneMapping(glm::vec3 color) {
   return color;
 }
 
-void renderTile(Image& img, int sx, int fx, int sy, int fy, int X, int Y, int s) {
+void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, float s) {
   for (int i = sx; i < fx; i++) {
     for (int j = sy; j < fy; j++) {
       float dx = X + i * s + s / 2;
@@ -619,7 +619,7 @@ int main(int argc, const char *argv[]) {
 
   int width = 1024;  // width of the image
   int height = 768;  // height of the image
-  float fov = 60;    // field of view
+  float fov = 90;    // field of view
 
   sceneDefinition();  // Let's define a scene
 
