@@ -73,7 +73,6 @@ class Object {
  public:
   glm::vec3 color;    ///< Color of the object
   Material material;  ///< Structure describing the material of the object
-  bool isMirror = false;
   /** A function computing an intersection, which returns the structure Hit */
   virtual Hit intersect(Ray ray) = 0;
   virtual ~Object() = default;
@@ -122,12 +121,6 @@ class Sphere : public Object {
   Sphere(float radius, glm::vec3 center, Material material)
       : radius(radius), center(center) {
     this->material = material;
-    this->isMirror = false;
-  }
-  Sphere(float radius, glm::vec3 center, Material material, bool mirror)
-      : radius(radius), center(center) {
-    this->material = material;
-    this->isMirror = mirror;
   }
   /** Implementation of the intersection function*/
   Hit intersect(Ray ray) {
@@ -181,9 +174,6 @@ class Plane : public Object {
     Hit hit;
     hit.hit = false;
 
-    /*
-             Excercise 1 - Plane-ray intersection
-             */
     float denominator = glm::dot(normal, ray.direction);
     if (abs(denominator) >= TOLERANCE) {
       /*
@@ -363,34 +353,27 @@ glm::vec3 PhongModel(glm::vec3 point, glm::vec3 normal,
     for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
       Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
       if (shadow_hit.hit &&
-          shadow_hit.distance <
-              glm::distance(lights[light_num]->position, point)) {
-        in_shadow = true;
-        break;
+          shadow_hit.distance < glm::distance(lights[light_num]->position, point)) {
+          in_shadow = true;
+          break;
       }
     }
 
     if (in_shadow) continue;
 
     glm::vec3 reflected_direction = glm::reflect(-light_direction, normal);
-
     float NdotL = glm::clamp(glm::dot(normal, light_direction), 0.0f, 1.0f);
-    float VdotR =
-        glm::clamp(glm::dot(view_direction, reflected_direction), 0.0f, 1.0f);
+    float VdotR = glm::clamp(glm::dot(view_direction, reflected_direction), 0.0f, 1.0f);
 
     glm::vec3 diffuse_color = material.diffuse;
     glm::vec3 diffuse = diffuse_color * glm::vec3(NdotL);
-    glm::vec3 specular =
-        material.specular * glm::vec3(pow(VdotR, material.shininess));
+    glm::vec3 specular = material.specular * glm::vec3(pow(VdotR, material.shininess));
 
     float dist = glm::distance(lights[light_num]->position, point);
     float attenuation = 1.0f / (1.0f + 0.1f * dist + 0.01f * dist * dist);
     color += lights[light_num]->color * (diffuse + specular) * attenuation;
   }
   color += ambient_light * material.ambient;
-  // Instead of clamping it we use tone mapping and gamma correction to preserve
-  // brightness relationships color = glm::clamp(color, glm::vec3(0.0),
-  // glm::vec3(1.0));
   return color;
 }
 
@@ -413,14 +396,12 @@ glm::vec3 trace_ray(const Ray &ray, int depth) {
 
   glm::vec3 color(0.0);
   if (closest_hit.hit) {
-    if (depth < MAX_RECURSION_DEPTH && closest_hit.object->getMaterial().shininess < 0.0f) {
+    if (depth <= MAX_RECURSION_DEPTH && closest_hit.object->getMaterial().isReflective) {
       glm::vec3 reflectedDirection = glm::reflect(glm::normalize(ray.direction), glm::normalize(closest_hit.normal));
-      Ray reflectionRay(closest_hit.intersection + glm::vec3(TOLERANCE) * reflectedDirection, reflectedDirection);
+      Ray reflectionRay(closest_hit.intersection + TOLERANCE * reflectedDirection, reflectedDirection);
       color = trace_ray(reflectionRay, depth + 1);
     } else {
-      color = PhongModel(closest_hit.intersection, closest_hit.normal,
-                         glm::normalize(-ray.direction),
-                         closest_hit.object->getMaterial());
+      color = PhongModel(closest_hit.intersection, closest_hit.normal, glm::normalize(-ray.direction), closest_hit.object->getMaterial());
     }
   } else {
     color = glm::vec3(0.0, 0.0, 0.0);
@@ -476,17 +457,6 @@ void sceneDefinition() {
   sky_backdrop.specular = glm::vec3(0.1f);
   sky_backdrop.shininess = 1.0f;
 
-  Material warm_wall;
-  warm_wall.ambient = glm::vec3(0.9f, 0.8f, 0.7f);
-  warm_wall.diffuse = glm::vec3(0.8f, 0.7f, 0.6f);
-  warm_wall.specular = glm::vec3(0.2f);
-  warm_wall.shininess = 5.0f;
-  Material green_diffuse;
-  green_diffuse.ambient = glm::vec3(0.3f, 1.0f, 0.3f);
-  green_diffuse.diffuse = glm::vec3(0.2f, 1.0f, 0.2f);
-  green_diffuse.specular = glm::vec3(0.1f);
-  green_diffuse.shininess = 1.0f;
-
   Material red_specular;
   red_specular.ambient = glm::vec3(0.0f, 0.1f, 0.1f);
   red_specular.diffuse = glm::vec3(0.99f, 0.1f, 0.1f);
@@ -500,6 +470,7 @@ void sceneDefinition() {
   blue_specular.diffuse /= glm::vec3(3.0f);
   blue_specular.specular = glm::vec3(0.9);
   blue_specular.shininess = 50.0;
+  blue_specular.isReflective = true;
 
   Material floor_material;
   floor_material.ambient = glm::vec3(1.0f, 1.0f, 1.0f);
@@ -514,14 +485,9 @@ void sceneDefinition() {
   back_wall_material.specular = glm::vec3(0.1f);
   back_wall_material.shininess = 1.0f;
 
-  Material red_wall_material;
-  red_wall_material.ambient = glm::vec3(1.0f, 0.5f, 0.4f);
-  red_wall_material.diffuse = glm::vec3(1.0f, 0.0f, 0.0f);
-  red_wall_material.specular = glm::vec3(0.0f);
-  red_wall_material.shininess = 1.0;
-
-  objects.push_back(new Sphere(1.0, glm::vec3(1, -2, 8), blue_specular, true));
+  objects.push_back(new Sphere(1.0, glm::vec3(1, -2, 8), blue_specular));
   objects.push_back(new Sphere(0.5, glm::vec3(-1, -2.5, 6), red_specular));
+  objects.push_back(new Sphere(2.0, glm::vec3(-3,-1, 8), sky_backdrop));
   // objects.push_back(new Sphere(1.0, glm::vec3(2,-2,6), green_diffuse));
 
   // Planes
@@ -597,6 +563,17 @@ glm::vec3 toneMapping(glm::vec3 color) {
   return color;
 }
 
+atomic<int> pixels_rendered(0);
+
+void printProgress(int totalPixels) {
+    while (pixels_rendered < totalPixels) {
+        float progress = (float)pixels_rendered / totalPixels * 100.0f;
+        cout << "\rRendering: " << progress << "% (" << pixels_rendered << "/" << totalPixels << ")" << flush;
+        this_thread::sleep_for(chrono::milliseconds(500));
+    }
+    cout << "\rRendering: 100% (" << totalPixels << "/" << totalPixels << ")" << endl;
+}
+
 void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, float s) {
   for (int i = sx; i < fx; i++) {
     for (int j = sy; j < fy; j++) {
@@ -610,15 +587,17 @@ void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, fl
 
       Ray ray(origin, direction);
       img.setPixel(i, j, toneMapping(trace_ray(ray, 0)));
+      ++pixels_rendered;
     }
   }
 }
 
 int main(int argc, const char *argv[]) {
-  clock_t t = clock();  // variable for keeping the time of the rendering
+  auto t0 = chrono::high_resolution_clock::now();
+  int multiplier = 2;
 
-  int width = 1024;  // width of the image
-  int height = 768;  // height of the image
+  int width = multiplier*1024;  // width of the image
+  int height = multiplier*768;  // height of the image
   float fov = 90;    // field of view
 
   sceneDefinition();  // Let's define a scene
@@ -639,7 +618,7 @@ int main(int argc, const char *argv[]) {
   vector<thread> threads;
   int wPerCore = width / cores;
 
-
+  thread progressThread(printProgress, width * height);
   for (int i = 0; i < cores; ++i) {
     int start = i * wPerCore;
     int finish = (i == cores - 1) ? width : (i + 1) * wPerCore;
@@ -651,11 +630,15 @@ int main(int argc, const char *argv[]) {
     thread.join();
   }
 
-  t = clock() - t;
-  cout << "It took " << ((float)t) / CLOCKS_PER_SEC
-       << " seconds to render the image." << endl;
-  cout << "I could render at " << (float)CLOCKS_PER_SEC / ((float)t)
-       << " frames per second." << endl;
+  progressThread.join();
+
+  auto t1 = chrono::high_resolution_clock::now();
+  auto duration = chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
+  float seconds = duration.count() / 1000.0f;
+  float fps = 1.0f / seconds;
+
+  std::cout << "It took " << seconds << " seconds to render the image." << std::endl;
+  std::cout << "I could render at " << fps << " frames per second." << std::endl;
 
   if (argc == 2) {
     image.writeImage(argv[1]);
