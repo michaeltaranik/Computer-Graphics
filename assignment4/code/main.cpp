@@ -54,6 +54,7 @@ struct Hit {
   float distance;  ///< Distance from the origin of the ray to the intersection
                    ///< point
   Object *object;  ///< A pointer to the intersected object
+  bool isInsideObject;
 };
 
 /**
@@ -151,6 +152,12 @@ class Sphere : public Object {
       hit.normal = glm::normalize(hit.intersection - center);
       hit.distance = glm::distance(ray.origin, hit.intersection);
       hit.object = this;
+      float dist_to_center = glm::length(ray.origin - center);
+      hit.isInsideObject = (dist_to_center < radius);
+
+      if (hit.isInsideObject) {
+        hit.normal = -hit.normal;
+      }
     } else {
       hit.hit = false;
     }
@@ -396,10 +403,24 @@ glm::vec3 trace_ray(const Ray &ray, int depth) {
 
   glm::vec3 color(0.0);
   if (closest_hit.hit) {
-    if (depth <= MAX_RECURSION_DEPTH && closest_hit.object->getMaterial().isReflective) {
+    if (depth < MAX_RECURSION_DEPTH && closest_hit.object->getMaterial().isReflective) {
       glm::vec3 reflectedDirection = glm::reflect(glm::normalize(ray.direction), glm::normalize(closest_hit.normal));
       Ray reflectionRay(closest_hit.intersection + TOLERANCE * reflectedDirection, reflectedDirection);
       color = trace_ray(reflectionRay, depth + 1);
+    } else if (depth < MAX_RECURSION_DEPTH && closest_hit.object->getMaterial().isRefractive) {
+      float ridx = closest_hit.object->getMaterial().refractIdx;
+      float eta = closest_hit.isInsideObject ? ridx / 1.0f : 1.0f / ridx;
+      glm::vec3 refractDir = glm::refract(glm::normalize(ray.direction), closest_hit.normal, eta);
+
+      if (glm::length(refractDir) > 0.001f) {
+        glm::vec3 offset = closest_hit.normal * TOLERANCE;
+        if (closest_hit.isInsideObject) {
+          offset = -offset;  // If inside, move inward
+        }
+
+        Ray refractRay(closest_hit.intersection + offset, refractDir);
+        color = trace_ray(refractRay, depth + 1) * closest_hit.object->getMaterial().transparency;
+      }
     } else {
       color = PhongModel(closest_hit.intersection, closest_hit.normal, glm::normalize(-ray.direction), closest_hit.object->getMaterial());
     }
@@ -456,6 +477,9 @@ void sceneDefinition() {
   sky_backdrop.diffuse = glm::vec3(0.5f, 0.7f, 0.9f);
   sky_backdrop.specular = glm::vec3(0.1f);
   sky_backdrop.shininess = 1.0f;
+  sky_backdrop.isRefractive = true;
+  sky_backdrop.refractIdx = 2.0f;
+  sky_backdrop.transparency = 0.5f;
 
   Material red_specular;
   red_specular.ambient = glm::vec3(0.0f, 0.1f, 0.1f);
