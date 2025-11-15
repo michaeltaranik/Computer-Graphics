@@ -1,6 +1,6 @@
 /**
-        @file main.cpp
-        */
+  @file main.cpp
+*/
 
 #include <atomic>
 #include <cmath>
@@ -23,17 +23,12 @@ using namespace std;
 #define MAX_RECURSION_DEPTH 5
 
 /**
-        Class representing a single ray.
-        */
+  Class representing a single ray.
+*/
 class Ray {
  public:
-  glm::vec3 origin;     ///< Origin of the ray
-  glm::vec3 direction;  ///< Direction of the ray
-  /**
-          Contructor of the ray
-          @param origin Origin of the ray
-          @param direction Direction of the ray
-          */
+  glm::vec3 origin;     
+  glm::vec3 direction;  
   Ray(glm::vec3 origin, glm::vec3 direction)
       : origin(origin), direction(direction) {}
 };
@@ -42,34 +37,23 @@ class Object;
 glm::vec3 toneMapping(glm::vec3);
 glm::vec3 trace_ray(const Ray &ray, int depth);
 
-/**
-        Structure representing the even of hitting an object
-        */
 struct Hit {
-  bool hit;          ///< Boolean indicating whether there was or there was no
-                     ///< intersection with an object
-  glm::vec3 normal;  ///< Normal vector of the intersected object at the
-                     ///< intersection point
-  glm::vec3 intersection;  ///< Point of Intersection
-  float distance;  ///< Distance from the origin of the ray to the intersection
-                   ///< point
-  Object *object;  ///< A pointer to the intersected object
+  bool hit;
+  glm::vec3 normal;
+  glm::vec3 intersection;
+  float distance;
+  Object* object;
   bool isInsideObject;
 };
 
 /**
-        General class for the object
-        */
+  General class for the object
+*/
 class Object {
  protected:
-  glm::mat4
-      transformationMatrix;  ///< Matrix representing the transformation from
-                             ///< the local to the global coordinate system
-  glm::mat4 inverseTransformationMatrix;  ///< Matrix representing the
-                                          ///< transformation from the global to
-                                          ///< the local coordinate system
-  glm::mat4 normalMatrix;  ///< Matrix for transforming normal vectors from the
-                           ///< local to the global coordinate system
+  glm::mat4 transformationMatrix;  
+  glm::mat4 inverseTransformationMatrix; 
+  glm::mat4 normalMatrix;  
 
  public:
   glm::vec3 color;    ///< Color of the object
@@ -84,17 +68,9 @@ class Object {
           @param material A structure describing the material of the object
           */
   void setMaterial(Material material) { this->material = material; }
-  /** Functions for setting up all the transformation matrices
-          @param matrix The matrix representing the transformation of the object
-     in the global coordinates */
+
   void setTransformation(glm::mat4 matrix) {
     transformationMatrix = matrix;
-
-    /* ----- Exercise 2 ---------
-             Set the two remaining matrices
-             inverseTransformationMatrix =
-             normalMatrix =
-             */
     inverseTransformationMatrix = glm::inverse(matrix);
     normalMatrix = glm::transpose(inverseTransformationMatrix);
   }
@@ -153,11 +129,11 @@ class Sphere : public Object {
       hit.distance = glm::distance(ray.origin, hit.intersection);
       hit.object = this;
       float dist_to_center = glm::length(ray.origin - center);
-      hit.isInsideObject = (dist_to_center < radius);
+      // hit.isInsideObject = (dist_to_center < radius);
 
-      if (hit.isInsideObject) {
-        hit.normal = -hit.normal;
-      }
+      // if (hit.isInsideObject) {
+      //   hit.normal = -hit.normal;
+      // }
     } else {
       hit.hit = false;
     }
@@ -294,8 +270,7 @@ class Cone : public Object {
     glm::vec3 localDirection = glm::vec3(inverseTransformationMatrix * glm::vec4(ray.direction, 0.0f));
     localDirection = glm::normalize(localDirection);
     Ray localRay(localOrigin, localDirection);
-    // broke down into two different functions for base and surface, since it
-    // makes more sense to reuse the code from Plane class
+
     Hit surfaceHit = coneSurfaceIntersect(localRay, ray.origin);
     Hit baseHit = plane->intersect(localRay);
     if (baseHit.hit) {
@@ -336,31 +311,23 @@ class Light {
 };
 
 vector< Light * > lights;  ///< A list of lights in the scene
-// reduced it a bit
 glm::vec3 ambient_light(0.01f);
 vector< Object * > objects;  ///< A list of all objects in the scene
 
-/** Function for computing color of an object according to the Phong Model
-        @param point A point belonging to the object for which the color is
-   computer
-        @param normal A normal vector the the point
-        @param view_direction A normalized direction from the point to the
-   viewer/camera
-        @param material A material structure representing the material of the
-   object
-        */
-glm::vec3 PhongModel(glm::vec3 point, glm::vec3 normal,
-                     glm::vec3 view_direction, Material material) {
+
+glm::vec3 PhongModel(const Ray &ray, const Hit &hit) {
   glm::vec3 color(0.0);
+  Material mat = hit.object->getMaterial();
+
   for (int light_num = 0; light_num < lights.size(); light_num++) {
-    glm::vec3 light_direction = glm::normalize(lights[light_num]->position - point);
+    glm::vec3 light_direction = glm::normalize(lights[light_num]->position - hit.intersection);
     bool in_shadow = false;
 
-    Ray shadowRay(point + normal * TOLERANCE, light_direction);
+    Ray shadowRay(hit.intersection + light_direction * TOLERANCE, light_direction);
     for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
+      if (objects[obj_num] == hit.object) continue;
       Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
-      if (shadow_hit.hit &&
-          shadow_hit.distance < glm::distance(lights[light_num]->position, point)) {
+      if (shadow_hit.hit && shadow_hit.distance < glm::distance(lights[light_num]->position, hit.intersection)) {
           in_shadow = true;
           break;
       }
@@ -368,30 +335,32 @@ glm::vec3 PhongModel(glm::vec3 point, glm::vec3 normal,
 
     if (in_shadow) continue;
 
-    glm::vec3 reflected_direction = glm::reflect(-light_direction, normal);
-    float NdotL = glm::clamp(glm::dot(normal, light_direction), 0.0f, 1.0f);
-    float VdotR = glm::clamp(glm::dot(view_direction, reflected_direction), 0.0f, 1.0f);
+    glm::vec3 reflected_direction = glm::reflect(-light_direction, hit.normal);
+    float NdotL = glm::clamp(glm::dot(hit.normal, light_direction), 0.0f, 1.0f);
+    float VdotR = glm::clamp(glm::dot(-ray.direction, reflected_direction), 0.0f, 1.0f);
 
-    glm::vec3 diffuse_color = material.diffuse;
+    glm::vec3 diffuse_color = mat.diffuse;
     glm::vec3 diffuse = diffuse_color * glm::vec3(NdotL);
-    glm::vec3 specular = material.specular * glm::vec3(pow(VdotR, material.shininess));
+    glm::vec3 specular = mat.specular * glm::vec3(pow(VdotR, mat.shininess));
 
-    float dist = glm::distance(lights[light_num]->position, point);
+    float dist = glm::distance(lights[light_num]->position, hit.intersection);
     float attenuation = 1.0f / (1.0f + 0.1f * dist + 0.01f * dist * dist);
     color += lights[light_num]->color * (diffuse + specular) * attenuation;
   }
-  color += ambient_light * material.ambient;
+
+  color += ambient_light * mat.ambient;
   return color;
 }
 
-/**
-        Functions that computes a color along the ray
-        @param ray Ray that should be traced through the scene
-        @return Color at the intersection point
-        */
+glm::vec3 trace_reflection(const Ray &ray, const Hit &hit, int depth) {
+    glm::vec3 reflectedDirection;
+    reflectedDirection = glm::reflect(glm::normalize(ray.direction), glm::normalize(hit.normal));
+    Ray reflectionRay(hit.intersection + TOLERANCE * reflectedDirection, reflectedDirection);
+    return hit.object->getMaterial().kreflect * trace_ray(reflectionRay, depth + 1);
+}
+
 glm::vec3 trace_ray(const Ray &ray, int depth) {
   Hit cHit;
-
   cHit.hit = false;
   cHit.distance = INFINITY;
 
@@ -406,37 +375,33 @@ glm::vec3 trace_ray(const Ray &ray, int depth) {
   
   Material mat = cHit.object->getMaterial();
 
-  if (depth < MAX_RECURSION_DEPTH) {
-    if (mat.isReflective) {
-      glm::vec3 reflectedDirection;
-      reflectedDirection = glm::reflect(glm::normalize(ray.direction), glm::normalize(cHit.normal));
-      Ray reflectionRay(cHit.intersection + TOLERANCE * reflectedDirection, reflectedDirection);
-      color = trace_ray(reflectionRay, depth + 1);
-    } else if (mat.isRefractive) {
-      float ridx = mat.refractIdx;
-      float eta = cHit.isInsideObject ? ridx / 1.0f : 1.0f / ridx;
-      glm::vec3 refractDir = glm::refract(glm::normalize(ray.direction), cHit.normal, eta);
-
-      if (glm::length(refractDir) > 0.001f) {
-        glm::vec3 offset = cHit.normal * TOLERANCE;
-        if (cHit.isInsideObject) {
-          offset = -offset;  // If inside, move inward
-        }
-
-        Ray refractRay(cHit.intersection + offset, refractDir);
-        color = trace_ray(refractRay, depth + 1) * mat.transparency;
-      }
-    } else {
-      color = PhongModel(cHit.intersection, cHit.normal, glm::normalize(-ray.direction), mat);
-    }
-  } else {
-    color = PhongModel(cHit.intersection, cHit.normal, glm::normalize(-ray.direction), mat);
+  if (depth >= MAX_RECURSION_DEPTH) {
+    color = PhongModel(ray, cHit);
+    return color;
   }
+
+  if (mat.kreflect > 0.0f) {
+    color += trace_reflection(ray, cHit, depth);
+  } 
+  
+  if (mat.krefract > 0.0f) {
+    glm::vec3 incident = glm::normalize(ray.direction);
+    glm::vec3 normal = glm::normalize(cHit.normal);
+    float eta = 1.0f/1.5f;
+    glm::vec3 refracted = glm::refract(incident, normal, eta);
+    if (glm::length(refracted) > TOLERANCE) {
+      Ray refracted_ray(cHit.intersection + TOLERANCE * refracted, refracted);
+      color += mat.krefract * trace_ray(refracted_ray, depth + 1);
+    } else {
+      color += mat.krefract * trace_reflection(ray, cHit, depth);
+    }
+  } 
+  
+  color += max(1.0f - mat.kreflect - mat.krefract, 0.0f) * PhongModel(ray, cHit);
   return color;
 }
-/**
-        Function defining the scene
-        */
+
+
 void sceneDefinition() {
   Material emerald_green;
   emerald_green.ambient = glm::vec3(0.1f, 0.6f, 0.3f);
@@ -487,7 +452,7 @@ void sceneDefinition() {
   sky_backdrop.diffuse = glm::vec3(0.5f, 0.7f, 0.9f);
   sky_backdrop.specular = glm::vec3(0.1f);
   sky_backdrop.shininess = 1.0f;
-  sky_backdrop.isRefractive = true;
+  sky_backdrop.krefract = 1.0;
   sky_backdrop.refractIdx = 2.0f;
   sky_backdrop.transparency = 0.5f;
 
@@ -499,12 +464,11 @@ void sceneDefinition() {
   red_specular.shininess = 10.0;
 
   Material blue_specular;
-  blue_specular.ambient = glm::vec3(0.07f, 0.07f, 0.0f);
-  blue_specular.diffuse = glm::vec3(0.5f, 0.5f, 0.5f);
-  blue_specular.diffuse /= glm::vec3(3.0f);
-  blue_specular.specular = glm::vec3(0.9);
-  blue_specular.shininess = 50.0;
-  blue_specular.isReflective = true;
+  blue_specular.ambient = glm::vec3(0.02f, 0.02f, 0.08f);
+  blue_specular.diffuse = glm::vec3(0.1f, 0.1f, 0.6f);
+  blue_specular.specular = glm::vec3(0.8f, 0.8f, 1.0f);
+  blue_specular.shininess = 128.0f;
+  blue_specular.kreflect = 0.3f;
 
   Material back_wall_material;
   back_wall_material.ambient = glm::vec3(0.02f, 0.05f, 0.02f);
