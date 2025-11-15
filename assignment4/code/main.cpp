@@ -129,11 +129,11 @@ class Sphere : public Object {
       hit.distance = glm::distance(ray.origin, hit.intersection);
       hit.object = this;
       float dist_to_center = glm::length(ray.origin - center);
-      // hit.isInsideObject = (dist_to_center < radius);
+      hit.isInsideObject = (dist_to_center < radius);
 
-      // if (hit.isInsideObject) {
-      //   hit.normal = -hit.normal;
-      // }
+      if (hit.isInsideObject) {
+        hit.normal = -hit.normal;
+      }
     } else {
       hit.hit = false;
     }
@@ -376,28 +376,40 @@ glm::vec3 trace_ray(const Ray &ray, int depth) {
   Material mat = cHit.object->getMaterial();
 
   if (depth >= MAX_RECURSION_DEPTH) {
-    color = PhongModel(ray, cHit);
-    return color;
+    return PhongModel(ray, cHit);
   }
 
-  if (mat.kreflect > 0.0f) {
-    color += trace_reflection(ray, cHit, depth);
-  } 
+  glm::vec3 direct_color = PhongModel(ray, cHit);
   
   if (mat.krefract > 0.0f) {
     glm::vec3 incident = glm::normalize(ray.direction);
-    glm::vec3 normal = glm::normalize(cHit.normal);
-    float eta = 1.0f/1.5f;
+    glm::vec3 normal = cHit.normal;
+    normal = glm::normalize(normal);
+
+    float eta = cHit.isInsideObject ? mat.refractIdx / 1.0f : 1.0f / mat.refractIdx;
     glm::vec3 refracted = glm::refract(incident, normal, eta);
-    if (glm::length(refracted) > TOLERANCE) {
-      Ray refracted_ray(cHit.intersection + TOLERANCE * refracted, refracted);
+
+    if (glm::dot(refracted, refracted) > TOLERANCE) {
+      glm::vec3 offset = -normal * TOLERANCE;
+      Ray refracted_ray(cHit.intersection + offset, refracted);
       color += mat.krefract * trace_ray(refracted_ray, depth + 1);
     } else {
-      color += mat.krefract * trace_reflection(ray, cHit, depth);
+      // Total internal reflection
+      glm::vec3 reflected = glm::reflect(incident, normal);
+      Ray reflected_ray(cHit.intersection + normal * TOLERANCE, reflected);
+      color += mat.krefract * trace_ray(reflected_ray, depth + 1);
     }
-  } 
-  
-  color += max(1.0f - mat.kreflect - mat.krefract, 0.0f) * PhongModel(ray, cHit);
+
+    color += mat.transparency * direct_color;
+
+  } else if (mat.kreflect > 0.0f) {
+    glm::vec3 reflection_color = trace_reflection(ray, cHit, depth);
+    color += (1 - mat.kreflect) * direct_color;
+    color += mat.kreflect * reflection_color;
+  } else {
+    color = direct_color;
+  }
+
   return color;
 }
 
@@ -447,15 +459,6 @@ void sceneDefinition() {
   warm_floor.specular = glm::vec3(0.9f);
   warm_floor.shininess = 10.0f;
 
-  Material sky_backdrop;
-  sky_backdrop.ambient = glm::vec3(0.6f, 0.8f, 1.0f);
-  sky_backdrop.diffuse = glm::vec3(0.5f, 0.7f, 0.9f);
-  sky_backdrop.specular = glm::vec3(0.1f);
-  sky_backdrop.shininess = 1.0f;
-  sky_backdrop.krefract = 1.0;
-  sky_backdrop.refractIdx = 2.0f;
-  sky_backdrop.transparency = 0.5f;
-
   Material red_specular;
   red_specular.ambient = glm::vec3(0.0f, 0.1f, 0.1f);
   red_specular.diffuse = glm::vec3(0.99f, 0.1f, 0.1f);
@@ -463,19 +466,28 @@ void sceneDefinition() {
   red_specular.specular = glm::vec3(0.1f);
   red_specular.shininess = 10.0;
 
-  Material blue_specular;
-  blue_specular.ambient = glm::vec3(0.02f, 0.02f, 0.08f);
-  blue_specular.diffuse = glm::vec3(0.1f, 0.1f, 0.6f);
-  blue_specular.specular = glm::vec3(0.8f, 0.8f, 1.0f);
-  blue_specular.shininess = 128.0f;
-  blue_specular.kreflect = 0.3f;
-
   Material back_wall_material;
   back_wall_material.ambient = glm::vec3(0.02f, 0.05f, 0.02f);
   back_wall_material.diffuse = glm::vec3(0.0f, 0.94f, 0.16f);
   back_wall_material.diffuse /= glm::vec3(5.0f);
   back_wall_material.specular = glm::vec3(0.1f);
   back_wall_material.shininess = 1.0f;
+
+  Material sky_backdrop;
+  sky_backdrop.ambient = glm::vec3(0.6f, 0.8f, 1.0f);
+  sky_backdrop.diffuse = glm::vec3(0.5f, 0.7f, 0.9f);
+  sky_backdrop.specular = glm::vec3(0.1f);
+  sky_backdrop.shininess = 1.0f;
+  sky_backdrop.krefract = 1.0f;
+  sky_backdrop.refractIdx = 2.0f;
+  sky_backdrop.transparency = 0.1f;
+
+  Material blue_specular;
+  blue_specular.ambient = glm::vec3(0.02f, 0.02f, 0.08f);
+  blue_specular.diffuse = glm::vec3(0.1f, 0.1f, 0.6f);
+  blue_specular.specular = glm::vec3(0.8f, 0.8f, 1.0f);
+  blue_specular.shininess = 128.0f;
+  blue_specular.kreflect = 0.8f;
 
   objects.push_back(new Sphere(1.0, glm::vec3(1, -2, 8), blue_specular));
   objects.push_back(new Sphere(0.5, glm::vec3(-1, -2.5, 6), red_specular));
@@ -579,7 +591,7 @@ void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, fl
 
 int main(int argc, const char *argv[]) {
   auto t0 = chrono::high_resolution_clock::now();
-  int multiplier = 2;
+  int multiplier = 1;
 
   int width = multiplier*1024;  // width of the image
   int height = multiplier*768;  // height of the image
