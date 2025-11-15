@@ -390,42 +390,47 @@ glm::vec3 PhongModel(glm::vec3 point, glm::vec3 normal,
         @return Color at the intersection point
         */
 glm::vec3 trace_ray(const Ray &ray, int depth) {
-  Hit closest_hit;
+  Hit cHit;
 
-  closest_hit.hit = false;
-  closest_hit.distance = INFINITY;
+  cHit.hit = false;
+  cHit.distance = INFINITY;
 
   for (int k = 0; k < objects.size(); k++) {
     Hit hit = objects[k]->intersect(ray);
-    if (hit.hit == true && hit.distance < closest_hit.distance)
-      closest_hit = hit;
+    if (hit.hit == true && hit.distance < cHit.distance)
+      cHit = hit;
   }
 
   glm::vec3 color(0.0);
-  if (closest_hit.hit) {
-    if (depth < MAX_RECURSION_DEPTH && closest_hit.object->getMaterial().isReflective) {
-      glm::vec3 reflectedDirection = glm::reflect(glm::normalize(ray.direction), glm::normalize(closest_hit.normal));
-      Ray reflectionRay(closest_hit.intersection + TOLERANCE * reflectedDirection, reflectedDirection);
+  if (!cHit.hit) return color;
+  
+  Material mat = cHit.object->getMaterial();
+
+  if (depth < MAX_RECURSION_DEPTH) {
+    if (mat.isReflective) {
+      glm::vec3 reflectedDirection;
+      reflectedDirection = glm::reflect(glm::normalize(ray.direction), glm::normalize(cHit.normal));
+      Ray reflectionRay(cHit.intersection + TOLERANCE * reflectedDirection, reflectedDirection);
       color = trace_ray(reflectionRay, depth + 1);
-    } else if (depth < MAX_RECURSION_DEPTH && closest_hit.object->getMaterial().isRefractive) {
-      float ridx = closest_hit.object->getMaterial().refractIdx;
-      float eta = closest_hit.isInsideObject ? ridx / 1.0f : 1.0f / ridx;
-      glm::vec3 refractDir = glm::refract(glm::normalize(ray.direction), closest_hit.normal, eta);
+    } else if (mat.isRefractive) {
+      float ridx = mat.refractIdx;
+      float eta = cHit.isInsideObject ? ridx / 1.0f : 1.0f / ridx;
+      glm::vec3 refractDir = glm::refract(glm::normalize(ray.direction), cHit.normal, eta);
 
       if (glm::length(refractDir) > 0.001f) {
-        glm::vec3 offset = closest_hit.normal * TOLERANCE;
-        if (closest_hit.isInsideObject) {
+        glm::vec3 offset = cHit.normal * TOLERANCE;
+        if (cHit.isInsideObject) {
           offset = -offset;  // If inside, move inward
         }
 
-        Ray refractRay(closest_hit.intersection + offset, refractDir);
-        color = trace_ray(refractRay, depth + 1) * closest_hit.object->getMaterial().transparency;
+        Ray refractRay(cHit.intersection + offset, refractDir);
+        color = trace_ray(refractRay, depth + 1) * mat.transparency;
       }
     } else {
-      color = PhongModel(closest_hit.intersection, closest_hit.normal, glm::normalize(-ray.direction), closest_hit.object->getMaterial());
+      color = PhongModel(cHit.intersection, cHit.normal, glm::normalize(-ray.direction), mat);
     }
   } else {
-    color = glm::vec3(0.0, 0.0, 0.0);
+    color = PhongModel(cHit.intersection, cHit.normal, glm::normalize(-ray.direction), mat);
   }
   return color;
 }
@@ -438,6 +443,11 @@ void sceneDefinition() {
   emerald_green.diffuse = glm::vec3(0.05f, 0.5f, 0.2f);
   emerald_green.specular = glm::vec3(0.4f, 0.9f, 0.6f);
   emerald_green.shininess = 30.0f;
+
+  Material black_color;
+  black_color.ambient = glm::vec3(0.0f);
+  black_color.diffuse = glm::vec3(0.0f);
+  black_color.specular = glm::vec3(0.0f);
 
   Material ruby_red;
   ruby_red.ambient = glm::vec3(0.08f, 0.1f, 0.02f);
@@ -496,12 +506,6 @@ void sceneDefinition() {
   blue_specular.shininess = 50.0;
   blue_specular.isReflective = true;
 
-  Material floor_material;
-  floor_material.ambient = glm::vec3(1.0f, 1.0f, 1.0f);
-  floor_material.diffuse = glm::vec3(1.0f, 1.0f, 1.0f);
-  floor_material.specular = glm::vec3(0.6);
-  floor_material.shininess = 10.0;
-
   Material back_wall_material;
   back_wall_material.ambient = glm::vec3(0.02f, 0.05f, 0.02f);
   back_wall_material.diffuse = glm::vec3(0.0f, 0.94f, 0.16f);
@@ -529,21 +533,15 @@ void sceneDefinition() {
       new Plane(glm::vec3(0, -3, 0), glm::vec3(0, 1, 0), warm_floor));
   // ceiling, not visible
   objects.push_back(
-      new Plane(glm::vec3(0, 27, 0), glm::vec3(0, -1, 0), emerald_green));
+      new Plane(glm::vec3(0, 27, 0), glm::vec3(0, -1, 0), black_color));
   // front wall, not visible
-  objects.push_back(
-      new Plane(glm::vec3(0, 0, -0.01), glm::vec3(0, 0, 1), floor_material));
+  // objects.push_back(
+  //     new Plane(glm::vec3(0, 0, -0.01), glm::vec3(0, 0, 1), black_color));
 
   // Cones
   // Yellow cone
-  Material yellow_specular;
-  yellow_specular.ambient = glm::vec3(0.014f, 0.011f, 0.01f);
-  yellow_specular.diffuse = glm::vec3(1.0f, 1.0f, 0.1f);
-  yellow_specular.specular = glm::vec3(0.8f);
-  yellow_specular.shininess = 100.0f;
   Cone *yellowCone = new Cone(gold);
-  glm::mat4 translation_yellow =
-      glm::translate(glm::mat4(1.0f), glm::vec3(5, 9, 14));
+  glm::mat4 translation_yellow = glm::translate(glm::mat4(1.0f), glm::vec3(5, 9, 14));
   glm::mat4 scaling_yellow = glm::scale(glm::mat4(1.0f), glm::vec3(3, 12, 3));
   glm::mat4 transformation_yellow = translation_yellow * scaling_yellow;
   yellowCone->setTransformation(transformation_yellow);
@@ -551,8 +549,7 @@ void sceneDefinition() {
 
   // Green cone
   Cone *greenCone = new Cone(emerald_green);
-  glm::mat4 translation_green =
-      glm::translate(glm::mat4(1.0f), glm::vec3(6, -3, 7));
+  glm::mat4 translation_green = glm::translate(glm::mat4(1.0f), glm::vec3(6, -3, 7));
   float coneHeight = 3.0f;
   float coneBase = 1.0f;
   glm::mat4 scaling_green = glm::scale(glm::mat4(1.0f), glm::vec3(coneBase, coneHeight, coneBase));
@@ -599,13 +596,13 @@ void printProgress(int totalPixels) {
 }
 
 void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, float s) {
+  float dz = 1;
+  glm::vec3 origin(0, 0, 0);
   for (int i = sx; i < fx; i++) {
+    float dx = X + i * s + s / 2;
     for (int j = sy; j < fy; j++) {
-      float dx = X + i * s + s / 2;
       float dy = Y - j * s - s / 2;
-      float dz = 1;
 
-      glm::vec3 origin(0, 0, 0);
       glm::vec3 direction(dx, dy, dz);
       direction = glm::normalize(direction);
 
