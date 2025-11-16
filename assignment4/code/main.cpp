@@ -415,31 +415,60 @@ glm::vec3 trace_ray(const Ray &ray, int depth) {
   glm::vec3 direct_color = PhongModel(ray, cHit);
   
   if (mat.krefract > 0.0f) {
-    glm::vec3 incident = glm::normalize(ray.direction);
-    cHit.normal = glm::normalize(cHit.normal);
+  glm::vec3 incident = glm::normalize(ray.direction);
+  glm::vec3 normal = glm::normalize(cHit.normal);
 
-    float eta = cHit.isInsideObject ? mat.refractIdx / 1.0f : 1.0f / mat.refractIdx;
-    glm::vec3 refracted = glm::refract(incident, cHit.normal, eta);
+  // angle of incidence
+  float cosi = glm::clamp(glm::dot(-incident, normal), -1.0f, 1.0f); 
+  float eta_i = 1.0f; // refractive index 'from'
+  float eta_t = mat.refractIdx; // refract. idx 'to'
 
-    if (glm::dot(refracted, refracted) > TOLERANCE) {
-      glm::vec3 offset = -cHit.normal * TOLERANCE;
-      Ray refracted_ray(cHit.intersection + offset, refracted);
-      color += mat.krefract * trace_ray(refracted_ray, depth + 1);
-    }
-
-    glm::vec3 reflected = glm::reflect(incident, cHit.normal);
-    Ray reflected_ray(cHit.intersection + cHit.normal * TOLERANCE, reflected);
-    color += (1.0f - mat.krefract) * trace_ray(reflected_ray, depth + 1);
-
-    // color += mat.transparency * direct_color;
-
-  } else if (mat.kreflect > 0.0f) {
-    glm::vec3 reflection_color = trace_reflection(ray, cHit, depth);
-    color += (1 - mat.kreflect) * direct_color;
-    color += mat.kreflect * reflection_color;
-  } else {
-    color = direct_color;
+  if (cHit.isInsideObject) {
+   // swap to make div. correct
+   std::swap(eta_i, eta_t);
   }
+
+  // reflectance at 0 degrees.
+  float r0_term = (eta_i - eta_t) / (eta_i + eta_t);
+  float R0 = r0_term * r0_term;
+
+  // check for tir
+ 	float eta_ratio = eta_i / eta_t;
+    // use snell's law to find sin(theta_t)^2
+ 	float k = 1.0f - eta_ratio * eta_ratio * (1.0f - cosi * cosi); 
+
+ 	float R_fresnel;
+ 	glm::vec3 refraction_color(0.0f);
+
+ 	if (k < 0.0f) {
+   // total internal reflection: all the light is reflected
+   R_fresnel = 1.0f;
+ 	} else {
+   // no total internal reflection, compute contribution
+   R_fresnel = R0 + (1.0f - R0) * pow(1.0f - cosi, 5);
+
+   // trace the refracted ray
+   glm::vec3 refracted = glm::refract(incident, normal, eta_ratio);
+   glm::vec3 offset = -normal * TOLERANCE;
+   Ray refracted_ray(cHit.intersection + offset, refracted);
+   refraction_color = trace_ray(refracted_ray, depth + 1);
+ 	}
+
+ 	// always traced, but its contribution is scaled by R_fresnel
+ 	glm::vec3 reflected = glm::reflect(incident, normal);
+ 	Ray reflected_ray(cHit.intersection + normal * TOLERANCE, reflected);
+ 	glm::vec3 reflection_color = trace_ray(reflected_ray, depth + 1);
+
+ 	color = (R_fresnel * reflection_color) + ((1.0f - R_fresnel) * refraction_color);
+ 	color += mat.transparency * direct_color;
+
+ } else if (mat.kreflect > 0.0f) {
+  glm::vec3 reflection_color = trace_reflection(ray, cHit, depth);
+  color += (1 - mat.kreflect) * direct_color;
+ 	color += mat.kreflect * reflection_color;
+ } else {
+ 	color = direct_color;
+ }
 
   return color;
 }
@@ -624,6 +653,7 @@ void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, fl
 
       Ray ray(origin, direction);
       img.setPixel(i, j, toneMapping(trace_ray(ray, 0)));
+      // img.setPixel(i, j, trace_ray(ray, 0));
       ++pixels_rendered;
     }
   }
