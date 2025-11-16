@@ -19,7 +19,7 @@
 
 using namespace std;
 
-#define TOLERANCE 1e-4f
+#define TOLERANCE 1e-3f
 #define MAX_RECURSION_DEPTH 5
 
 /**
@@ -258,7 +258,7 @@ class Cone : public Object {
  public:
   Cone(Material material) {
     this->material = material;
-    // Base plane for cone that is pointing down(x: 0, y: -1, z: 0)
+    // base plane for cone that is pointing down(x: 0, y: -1, z: 0)
     plane = new Plane(glm::vec3(0, -1, 0), glm::vec3(0, -1, 0), material);
   }
   ~Cone() {
@@ -351,18 +351,18 @@ glm::vec3 PhongModel(const Ray &ray, const Hit &hit) {
     }
 
     if (currentLight->cutoffAngleCos > 0.0f) {
-      // Compare the light's axis with the vector to the hit point
-      // We use -currentLight->direction because light_direction points TO the light,
+      // compare the light's axis with the vector to the hit point
+      // we use -currentLight->direction because light_direction points TO the light,
       // but currentLight->direction points AWAY from the light.
       float dot = glm::dot(light_direction, -currentLight->direction);
 
-      // If the dot product is less than the cutoff, it's outside the cone
+      // if the dot product is less than the cutoff, it's outside the cone
       if (dot < currentLight->cutoffAngleCos) {
-        continue; // This pixel is not lit by this spotlight, skip it
+        continue; // this pixel is not lit by this spotlight, skip it
       }
       
-      // A high exponent (e.g., 32, 64) gives a sharp edge
-      // A low exponent (e.g., 1, 4) gives a soft edge
+      // a high exponent (e.g., 32, 64) gives a sharp edge
+      // a low exponent (e.g., 1, 4) gives a soft edge
       spotFactor = pow(dot, currentLight->exp);
     }
 
@@ -661,7 +661,7 @@ void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, fl
 
 int main(int argc, const char *argv[]) {
   auto t0 = chrono::high_resolution_clock::now();
-  int multiplier = 2;
+  int multiplier = 4;
 
   int width = multiplier*1024;  // width of the image
   int height = multiplier*768;  // height of the image
