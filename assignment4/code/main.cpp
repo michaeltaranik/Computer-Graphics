@@ -305,9 +305,21 @@ class Light {
  public:
   glm::vec3 position;  ///< Position of the light source
   glm::vec3 color;     ///< Color/intentisty of the light source
-  Light(glm::vec3 position) : position(position) { color = glm::vec3(1.0); }
+  
+  glm::vec3 direction;
+  float cutoffAngleCos;
+  float exp;
+  Light(glm::vec3 position) : position(position) { 
+    color = glm::vec3(1.0); 
+    direction = glm::vec3(0.0); 
+    cutoffAngleCos = -1.0f;
+    exp = -1.0f;
+  }
   Light(glm::vec3 position, glm::vec3 color)
-      : position(position), color(color) {}
+      : position(position), color(color), direction(0.0f), cutoffAngleCos(-1.0f), exp(-1.0f) {}
+
+  Light(glm::vec3 position, glm::vec3 color, glm::vec3 dir, float angleDegrees, float exponent)
+      : position(position), color(color), direction(glm::normalize(dir)), cutoffAngleCos(glm::cos(glm::radians(angleDegrees))), exp(exponent) {}
 };
 
 vector< Light * > lights;  ///< A list of lights in the scene
@@ -320,20 +332,41 @@ glm::vec3 PhongModel(const Ray &ray, const Hit &hit) {
   Material mat = hit.object->getMaterial();
 
   for (int light_num = 0; light_num < lights.size(); light_num++) {
-    glm::vec3 light_direction = glm::normalize(lights[light_num]->position - hit.intersection);
+    Light* currentLight = lights[light_num];
+    glm::vec3 light_direction = glm::normalize(currentLight->position - hit.intersection);
     bool in_shadow = false;
+    float shadowPercent = 0.0f;
+    float spotFactor = 1.0f;
+    float shadowRigidness = 0.98f;
 
     Ray shadowRay(hit.intersection + light_direction * TOLERANCE, light_direction);
     for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
-      if (objects[obj_num] == hit.object) continue;
+      // if (objects[obj_num] == hit.object) continue;
       Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
-      if (shadow_hit.hit && shadow_hit.distance < glm::distance(lights[light_num]->position, hit.intersection)) {
+      if (shadow_hit.hit && shadow_hit.distance < glm::distance(currentLight->position, hit.intersection)) {
           in_shadow = true;
-          break;
+          shadowPercent += (1.0f - objects[obj_num]->getMaterial().krefract) * shadowRigidness;
+          // break;
       }
     }
 
-    if (in_shadow) continue;
+    if (currentLight->cutoffAngleCos > 0.0f) {
+      // Compare the light's axis with the vector to the hit point
+      // We use -currentLight->direction because light_direction points TO the light,
+      // but currentLight->direction points AWAY from the light.
+      float dot = glm::dot(light_direction, -currentLight->direction);
+
+      // If the dot product is less than the cutoff, it's outside the cone
+      if (dot < currentLight->cutoffAngleCos) {
+        continue; // This pixel is not lit by this spotlight, skip it
+      }
+      
+      // A high exponent (e.g., 32, 64) gives a sharp edge
+      // A low exponent (e.g., 1, 4) gives a soft edge
+      spotFactor = pow(dot, currentLight->exp);
+    }
+
+    // if (in_shadow) continue;
 
     glm::vec3 reflected_direction = glm::reflect(-light_direction, hit.normal);
     float NdotL = glm::clamp(glm::dot(hit.normal, light_direction), 0.0f, 1.0f);
@@ -345,7 +378,7 @@ glm::vec3 PhongModel(const Ray &ray, const Hit &hit) {
 
     float dist = glm::distance(lights[light_num]->position, hit.intersection);
     float attenuation = 1.0f / (1.0f + 0.1f * dist + 0.01f * dist * dist);
-    color += lights[light_num]->color * (diffuse + specular) * attenuation;
+    color += lights[light_num]->color * (diffuse + specular) * attenuation * (1 - shadowPercent);
   }
 
   color += ambient_light * mat.ambient;
@@ -383,24 +416,22 @@ glm::vec3 trace_ray(const Ray &ray, int depth) {
   
   if (mat.krefract > 0.0f) {
     glm::vec3 incident = glm::normalize(ray.direction);
-    glm::vec3 normal = cHit.normal;
-    normal = glm::normalize(normal);
+    cHit.normal = glm::normalize(cHit.normal);
 
     float eta = cHit.isInsideObject ? mat.refractIdx / 1.0f : 1.0f / mat.refractIdx;
-    glm::vec3 refracted = glm::refract(incident, normal, eta);
+    glm::vec3 refracted = glm::refract(incident, cHit.normal, eta);
 
     if (glm::dot(refracted, refracted) > TOLERANCE) {
-      glm::vec3 offset = -normal * TOLERANCE;
+      glm::vec3 offset = -cHit.normal * TOLERANCE;
       Ray refracted_ray(cHit.intersection + offset, refracted);
       color += mat.krefract * trace_ray(refracted_ray, depth + 1);
-    } else {
-      // Total internal reflection
-      glm::vec3 reflected = glm::reflect(incident, normal);
-      Ray reflected_ray(cHit.intersection + normal * TOLERANCE, reflected);
-      color += mat.krefract * trace_ray(reflected_ray, depth + 1);
     }
 
-    color += mat.transparency * direct_color;
+    glm::vec3 reflected = glm::reflect(incident, cHit.normal);
+    Ray reflected_ray(cHit.intersection + cHit.normal * TOLERANCE, reflected);
+    color += (1.0f - mat.krefract) * trace_ray(reflected_ray, depth + 1);
+
+    // color += mat.transparency * direct_color;
 
   } else if (mat.kreflect > 0.0f) {
     glm::vec3 reflection_color = trace_reflection(ray, cHit, depth);
@@ -478,7 +509,7 @@ void sceneDefinition() {
   sky_backdrop.diffuse = glm::vec3(0.5f, 0.7f, 0.9f);
   sky_backdrop.specular = glm::vec3(0.1f);
   sky_backdrop.shininess = 1.0f;
-  sky_backdrop.krefract = 1.0f;
+  sky_backdrop.krefract = 0.8f;
   sky_backdrop.refractIdx = 2.0f;
   sky_backdrop.transparency = 0.1f;
 
@@ -487,10 +518,11 @@ void sceneDefinition() {
   blue_specular.diffuse = glm::vec3(0.1f, 0.1f, 0.6f);
   blue_specular.specular = glm::vec3(0.8f, 0.8f, 1.0f);
   blue_specular.shininess = 128.0f;
-  blue_specular.kreflect = 0.8f;
+  blue_specular.kreflect = 0.99f;
 
   objects.push_back(new Sphere(1.0, glm::vec3(1, -2, 8), blue_specular));
   objects.push_back(new Sphere(0.5, glm::vec3(-1, -2.5, 6), red_specular));
+  // refractive sphere
   objects.push_back(new Sphere(2.0, glm::vec3(-3,-1, 8), sky_backdrop));
   // objects.push_back(new Sphere(1.0, glm::vec3(2,-2,6), green_diffuse));
 
@@ -535,9 +567,17 @@ void sceneDefinition() {
   greenCone->setTransformation(transformation_green);
   objects.push_back(greenCone);
 
-  lights.push_back(new Light(glm::vec3(0, 26, 5), glm::vec3(0.7f)));
+  // lights.push_back(new Light(glm::vec3(0, 26, 5), glm::vec3(0.7f)));
   lights.push_back(new Light(glm::vec3(0, 1, 12), glm::vec3(0.55f)));
   lights.push_back(new Light(glm::vec3(0, 5, 1), glm::vec3(0.63f)));
+
+  glm::vec3 lightPos = glm::vec3(0, 20, 10);
+  glm::vec3 lightColor = glm::vec3(1.0f); // A bright white light
+  glm::vec3 lightDir = glm::vec3(0, -1, 0); // Pointing straight down
+  float angle = 60.0f; // 30-degree cone
+  float sharpness = 16.0f; // A medium-sharp edge
+
+  lights.push_back(new Light(lightPos, lightColor, lightDir, angle, sharpness));
 }
 
 glm::vec3 toneMapping(glm::vec3 color) {
@@ -591,7 +631,7 @@ void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, fl
 
 int main(int argc, const char *argv[]) {
   auto t0 = chrono::high_resolution_clock::now();
-  int multiplier = 1;
+  int multiplier = 2;
 
   int width = multiplier*1024;  // width of the image
   int height = multiplier*768;  // height of the image
