@@ -229,8 +229,7 @@ class Triangle : public Object {
     delete plane;
   }
 
-
-Hit intersect(Ray ray) {
+  Hit intersect(Ray ray) {
     Hit hit;
     hit.hit = false;
     hit.distance = INFINITY;
@@ -240,44 +239,44 @@ Hit intersect(Ray ray) {
     glm::vec3 edge2 = v3 - v1;
     glm::vec3 h = glm::cross(ray.direction, edge2);
     float a = glm::dot(edge1, h);
-    
-    if (fabs(a) < TOLERANCE) return hit; // ray parallel to triangle
-    
+
+    if (fabs(a) < TOLERANCE) return hit;  // ray parallel to triangle
+
     float f = 1.0f / a;
     glm::vec3 s = ray.origin - v1;
     float u = f * glm::dot(s, h);
-    
+
     if (u < 0.0f || u > 1.0f) return hit;
-    
+
     glm::vec3 q = glm::cross(s, edge1);
     float v = f * glm::dot(ray.direction, q);
-    
+
     if (v < 0.0f || u + v > 1.0f) return hit;
-    
+
     // compute t to find out where the intersection point is on the line
     float t = f * glm::dot(edge2, q);
-  
-    if (t > TOLERANCE) {
-        hit.hit = true;
-        hit.distance = t;
-        hit.intersection = ray.origin + t * ray.direction;
 
-        if (smoothShading) {
-          if (n.size() != 3) {
-            cerr << "Size of normals is: " << n.size() << endl;
-            exit(EXIT_FAILURE);
-          }
-          
-          float w = 1.0f - (u + v);
-          hit.normal = glm::normalize(n[0] * w + n[1] * u + n[2] * v);
-        } else {
-          hit.normal = glm::normalize(glm::cross(edge1, edge2));
+    if (t > TOLERANCE) {
+      hit.hit = true;
+      hit.distance = t;
+      hit.intersection = ray.origin + t * ray.direction;
+
+      if (smoothShading) {
+        if (n.size() != 3) {
+          cerr << "Size of normals is: " << n.size() << endl;
+          exit(EXIT_FAILURE);
         }
-        hit.object = this;
+
+        float w = 1.0f - (u + v);
+        hit.normal = glm::normalize(n[0] * w + n[1] * u + n[2] * v);
+      } else {
+        hit.normal = glm::normalize(glm::cross(edge1, edge2));
+      }
+      hit.object = this;
     }
-    
+
     return hit;
-}
+  }
 };
 
 class Figure : public Object {
@@ -481,7 +480,13 @@ glm::vec3 PhongModel(const Hit &hit, const glm::vec3 &view_direction) {
 
     glm::vec3 diffuse_color = hit.object->getMaterial().diffuse;
     glm::vec3 diffuse = diffuse_color * glm::vec3(NdotL);
-    glm::vec3 specular = hit.object->getMaterial().specular * glm::vec3(pow(VdotR, hit.object->getMaterial().shininess));
+    // consider refactoring this
+    glm::vec3 specular;
+    if (VdotR > 0.001f) {
+      specular = hit.object->getMaterial().specular * glm::vec3(pow(VdotR, hit.object->getMaterial().shininess));
+    } else {
+      specular = glm::vec3(0.0f);
+    }
 
     float r = glm::distance(hit.intersection, lights[light_num]->position);
     r = max(r, 0.1f);
@@ -492,11 +497,6 @@ glm::vec3 PhongModel(const Hit &hit, const glm::vec3 &view_direction) {
   return color;
 }
 
-/**
- Functions that computes a color along the ray
- @param ray Ray that should be traced through the scene
- @return Color at the intersection point
- */
 glm::vec3 trace_ray(const Ray &ray) {
   Hit closest_hit;
 
