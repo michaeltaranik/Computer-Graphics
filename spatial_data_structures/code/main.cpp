@@ -24,71 +24,54 @@ using namespace std;
 #define WITH_NORMALS        1
 #define WITH_CUSTOM_FACE    2
 
-/**
- Class representing a single ray.
- */
+class Object;
+class Light;
+vector< Light* > lights;  
+glm::vec3 ambient_light(0.001, 0.001, 0.001);
+vector< Object* > objects;
+
 class Ray {
  public:
-  glm::vec3 origin;     ///< Origin of the ray
-  glm::vec3 direction;  ///< Direction of the ray
-                        /**
-                         Contructor of the ray
-                         @param origin Origin of the ray
-                         @param direction Direction of the ray
-                         */
-  Ray(glm::vec3 origin, glm::vec3 direction)
-      : origin(origin), direction(direction) {}
+  glm::vec3 origin;     
+  glm::vec3 direction;  
+  Ray(glm::vec3 origin, glm::vec3 direction) : origin(origin), direction(direction) {}
 };
 
-class Object;
+class Light {
+ public:
+  glm::vec3 position; 
+  glm::vec3 color;  
+  Light(glm::vec3 position) : position(position) { color = glm::vec3(1.0); }
+  Light(glm::vec3 position, glm::vec3 color) : position(position), color(color) {}
+};
 
-/**
- Structure representing the even of hitting an object
- */
+
 struct Hit {
-  bool hit;          ///< Boolean indicating whether there was or there was no
-                     ///< intersection with an object
-  glm::vec3 normal;  ///< Normal vector of the intersected object at the
-                     ///< intersection point
-  glm::vec3 intersection;  ///< Point of Intersection
-  float distance;  ///< Distance from the origin of the ray to the intersection
-                   ///< point
-  Object* object;  ///< A pointer to the intersected object
+  bool hit;         
+  glm::vec3 normal; 
+  glm::vec3 intersection;  
+  float distance;  
+  Object* object;  
 };
 
-/**
- General class for the object
- */
 class Object {
  protected:
-  glm::mat4
-      transformationMatrix;  ///< Matrix representing the transformation from
-                             ///< the local to the global coordinate system
-  glm::mat4 inverseTransformationMatrix;  ///< Matrix representing the
-                                          ///< transformation from the global to
-                                          ///< the local coordinate system
-  glm::mat4 normalMatrix;  ///< Matrix for transforming normal vectors from the
-                           ///< local to the global coordinate system
+  glm::mat4 transformationMatrix;  
+  glm::mat4 inverseTransformationMatrix; 
+  glm::mat4 normalMatrix;  
 
  public:
-  glm::vec3 color;    ///< Color of the object
-  Material material;  ///< Structure describing the material of the object
-  /** A function computing an intersection, which returns the structure Hit */
+  glm::vec3 color;    
+  Material material;  
+
   virtual Hit intersect(Ray ray) = 0;
   virtual ~Object() = default;
 
-  /** Function that returns the material struct of the object*/
   Material getMaterial() { return material; }
-  /** Function that set the material
-   @param material A structure describing the material of the object
-  */
+
   void setMaterial(Material material) { this->material = material; }
-  /** Functions for setting up all the transformation matrices
-  @param matrix The matrix representing the transformation of the object in the
-  global coordinates */
   void setTransformation(glm::mat4 matrix) {
     transformationMatrix = matrix;
-
     inverseTransformationMatrix = glm::inverse(matrix);
     normalMatrix = glm::transpose(inverseTransformationMatrix);
   }
@@ -133,11 +116,10 @@ public:
         return 2.0f * (extent.x * extent.y + extent.x * extent.z + extent.y * extent.z);
     }
     
-    glm::vec3 getCenter() const {
-        return (min + max) * 0.5f;
+    glm::vec3 getCenterDoubled() const {
+        return min + max;
     }
 };
-
 
 class BVHNode {
 public:
@@ -153,10 +135,6 @@ public:
         delete right;
     }
 };
-
-/**
- Implementation of the class Object for sphere shape.
- */
 
 class Plane : public Object {
  private:
@@ -391,8 +369,8 @@ class Figure : public Object {
 
     // sort triangles along the chosen axis
     auto comparator = [this, axis](Triangle* a, Triangle* b) {
-      return computeTriangleBBox(a).getCenter()[axis] <
-             computeTriangleBBox(b).getCenter()[axis];
+      return computeTriangleBBox(a).getCenterDoubled()[axis] <
+             computeTriangleBBox(b).getCenterDoubled()[axis];
     };
 
     int mid = start + (end - start) / 2;
@@ -438,24 +416,6 @@ class Figure : public Object {
     return (hit_left.distance < hit_right.distance) ? hit_left : hit_right;
   }
 };
-
-/**
- Light class
- */
-class Light {
- public:
-  glm::vec3 position;  ///< Position of the light source
-  glm::vec3 color;     ///< Color/intentisty of the light source
-  Light(glm::vec3 position) : position(position) { color = glm::vec3(1.0); }
-  Light(glm::vec3 position, glm::vec3 color)
-      : position(position), color(color) {}
-};
-
-vector< Light* > lights;  ///< A list of lights in the scene
-// glm::vec3 ambient_light(0.1,0.1,0.1);
-//  new ambient light
-glm::vec3 ambient_light(0.001, 0.001, 0.001);
-vector< Object* > objects;  ///< A list of all objects in the scene
 
 glm::vec3 PhongModel(const Hit &hit, const glm::vec3 &view_direction) {
   glm::vec3 color(0.0);
@@ -709,7 +669,6 @@ glm::vec3 toneMapping(glm::vec3 intensity) {
   return glm::clamp(alpha * glm::pow(intensity, glm::vec3(gamma)), glm::vec3(0.0), glm::vec3(1.0));
 }
 
-// atomic counter for progress
 atomic<int> pixels_rendered(0);
 
 void renderTile(int startX, int endX, int startY, int endY, Image& image, 
