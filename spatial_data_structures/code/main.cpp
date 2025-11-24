@@ -1,5 +1,5 @@
 /**
-@file main.cpp
+  @file main.cpp
 */
 
 #include <cmath>
@@ -19,7 +19,8 @@
 
 using namespace std;
 
-#define TOLERANCE           1e-5
+const float TOLERANCE = 2e-7;
+
 #define WITHOUT_NORMALS     0
 #define WITH_NORMALS        1
 #define WITH_CUSTOM_FACE    2
@@ -35,6 +36,9 @@ class Ray {
   glm::vec3 origin;     
   glm::vec3 direction;  
   Ray(glm::vec3 origin, glm::vec3 direction) : origin(origin), direction(direction) {}
+  Ray(float dx, float dy, float dz) : origin(0, 0, 0), direction(dx, dy, dz) {
+    direction = glm::normalize(direction);
+  }
 };
 
 class Light {
@@ -119,6 +123,9 @@ public:
     glm::vec3 getCenterDoubled() const {
         return min + max;
     }
+    glm::vec3 getCenter() const {
+        return (min + max) * 0.5f;
+    }
 };
 
 class BVHNode {
@@ -177,10 +184,9 @@ class Triangle : public Object {
   glm::vec3 v2;
   glm::vec3 v3;
   vector<glm::vec3> n;
-  bool smoothShading = false;
 
  public:
-  Triangle(vector<glm::vec3> vertices, Material material) {
+  Triangle(vector<glm::vec3> &vertices, Material material) {
     v1 = vertices[0];
     v2 = vertices[1];
     v3 = vertices[2];
@@ -194,12 +200,9 @@ class Triangle : public Object {
     v3 = vertices[2];
     glm::vec3 normal = glm::normalize(glm::cross(v2 - v1, v3 - v1));
     n = normals;
-    smoothShading = true;
     plane = new Plane(vertices[0], normal, material);
     this->material = material;
   }
-  void setSmooth(bool s) { smoothShading = s; }
-  void setMirror(bool s) { this->material.shininess = -1.0f; }
   glm::vec3 getV1() const { return v1; }
   glm::vec3 getV2() const { return v2; }
   glm::vec3 getV3() const { return v3; }
@@ -238,18 +241,7 @@ class Triangle : public Object {
       hit.hit = true;
       hit.distance = t;
       hit.intersection = ray.origin + t * ray.direction;
-
-      if (smoothShading) {
-        if (n.size() != 3) {
-          cerr << "Size of normals is: " << n.size() << endl;
-          exit(EXIT_FAILURE);
-        }
-
-        float w = 1.0f - (u + v);
-        hit.normal = glm::normalize(n[0] * w + n[1] * u + n[2] * v);
-      } else {
-        hit.normal = glm::normalize(glm::cross(edge1, edge2));
-      }
+      hit.normal = glm::normalize(glm::cross(edge1, edge2));
       hit.object = this;
     }
 
@@ -293,16 +285,6 @@ class Figure : public Object {
   }
 
   int getMode() { return mode; }
-  void setMirror(bool s) {
-    for (auto tr : meshes) {
-      tr->setMirror(s);
-    }
-  }
-  void setSmooth(bool s) {
-    for (auto tr : meshes) {
-      tr->setSmooth(s);
-    }
-  }
 
   Hit intersect(Ray ray) {
     Hit closest_hit;
@@ -345,44 +327,36 @@ class Figure : public Object {
     return bbox;
   }
 
-  BVHNode* buildBVHNode(vector< Triangle* >& triangles, int start, int end, int depth) {
+BVHNode* buildBVHNode(vector<Triangle*>& triangles, int start, int end, int depth) {
     BVHNode* node = new BVHNode();
-
+    
     for (int i = start; i < end; i++) {
-      node->bbox.expand(computeTriangleBBox(triangles[i]));
+        node->bbox.expand(computeTriangleBBox(triangles[i]));
     }
-
-    int triangleCount = end - start;
-
-    // leaf node condition: few triangles or max depth
-    if (triangleCount <= 4 || depth >= 20) {
-      node->triangles.insert(node->triangles.end(), triangles.begin() + start,
-                             triangles.begin() + end);
-      return node;
+    
+    int count = end - start;
+    if (count <= 6 || depth >= 18) {
+        node->triangles.assign(triangles.begin() + start, triangles.begin() + end);
+        return node;
     }
-
-    // choose split axis (longest axis)
+    
     glm::vec3 extent = node->bbox.max - node->bbox.min;
-    int axis = (extent.x > extent.y && extent.x > extent.z) ? 0
-               : (extent.y > extent.z)                      ? 1
-                                                            : 2;
-
-    // sort triangles along the chosen axis
+    int axis = (extent.x > extent.y && extent.x > extent.z) ? 0 : (extent.y > extent.z) ? 1 : 2;
+    
     auto comparator = [this, axis](Triangle* a, Triangle* b) {
-      return computeTriangleBBox(a).getCenterDoubled()[axis] <
-             computeTriangleBBox(b).getCenterDoubled()[axis];
+        return computeTriangleBBox(a).getCenter()[axis] < 
+               computeTriangleBBox(b).getCenter()[axis];
     };
-
-    int mid = start + (end - start) / 2;
-    std::nth_element(triangles.begin() + start, triangles.begin() + mid,
+    
+    int mid = start + count / 2;
+    std::nth_element(triangles.begin() + start, triangles.begin() + mid, 
                      triangles.begin() + end, comparator);
-
-    // build child nodes
+    
     node->left = buildBVHNode(triangles, start, mid, depth + 1);
     node->right = buildBVHNode(triangles, mid, end, depth + 1);
-
+    
     return node;
-  }
+}
 
   Hit intersectBVH(BVHNode* node, const Ray& localRay) {
     if (!node->bbox.intersect(localRay)) {
@@ -422,10 +396,9 @@ glm::vec3 PhongModel(const Hit &hit, const glm::vec3 &view_direction) {
 
   for (int light_num = 0; light_num < lights.size(); light_num++) {
     glm::vec3 light_direction = glm::normalize(lights[light_num]->position - hit.intersection);
-    glm::vec3 reflected_direction = glm::reflect(-light_direction, hit.normal);
 
     bool in_shadow = false;
-    Ray shadowRay(hit.intersection + (hit.normal * glm::vec3(TOLERANCE)), light_direction);
+    Ray shadowRay(hit.intersection + (100.0f * TOLERANCE * hit.normal), light_direction);
     for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
       Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
       if (shadow_hit.hit && shadow_hit.distance < glm::distance(lights[light_num]->position, hit.intersection)) {
@@ -436,21 +409,10 @@ glm::vec3 PhongModel(const Hit &hit, const glm::vec3 &view_direction) {
 
     if (in_shadow) continue;
     float NdotL = glm::clamp(glm::dot(hit.normal, light_direction), 0.0f, 1.0f);
-    float VdotR = glm::clamp(glm::dot(view_direction, reflected_direction), 0.0f, 1.0f);
 
     glm::vec3 diffuse_color = hit.object->getMaterial().diffuse;
     glm::vec3 diffuse = diffuse_color * glm::vec3(NdotL);
-    // consider refactoring this
-    glm::vec3 specular;
-    if (VdotR > 0.001f) {
-      specular = hit.object->getMaterial().specular * glm::vec3(pow(VdotR, hit.object->getMaterial().shininess));
-    } else {
-      specular = glm::vec3(0.0f);
-    }
-
-    float r = glm::distance(hit.intersection, lights[light_num]->position);
-    r = max(r, 0.1f);
-    color += lights[light_num]->color * (diffuse + specular) / r / r;
+    color += lights[light_num]->color * diffuse;
   }
   color += ambient_light * hit.object->getMaterial().ambient;
   color = glm::clamp(color, glm::vec3(0.0), glm::vec3(1.0));
@@ -605,17 +567,9 @@ void loadMesh(Figure* figure, string filename) {
 			glm::vec3 vertex;
 			iss >> vertex.x >> vertex.y >> vertex.z;
 			vertices.push_back(vertex);
-		} else if (token == "vn") {
-			glm::vec3 normal;
-			iss >> normal.x >> normal.y >> normal.z;
-			normals.push_back(normal);
 		} else if (token == "f") {
       processFace(figure, iss, normals, vertices, figure->getMaterial());
       ++faces;
-		} else if (token == "s") {
-			bool smooth;
-			iss >> smooth;
-      figure->setSmooth(smooth);
 		}
 	}
 
@@ -628,26 +582,28 @@ void loadMesh(Figure* figure, string filename) {
 
 void sceneDefinition() {
   Material mirror;
+  mirror.diffuse = glm::vec3(0.7);
+  // mirror.ambient = glm::vec3(0.7);
 
   Figure* bunny = new Figure(mirror, WITHOUT_NORMALS);
-  // loadMesh(bunny, string("meshes/bunny.obj"));
-  loadMesh(bunny, string("meshes/bunny_small.obj"));
+  loadMesh(bunny, string("meshes/bunny.obj"));
+  // loadMesh(bunny, string("meshes/bunny_small.obj"));
   bunny->buildBVH();
   glm::mat4 translationMatrixBunny = glm::translate(glm::vec3(0.0, -3.0, 8.0));
   bunny->setTransformation(translationMatrixBunny);
   objects.push_back(bunny);
 
   Figure* armadillo = new Figure(mirror, WITHOUT_NORMALS);
-  // loadMesh(armadillo, string("meshes/armadillo.obj"));
-  loadMesh(armadillo, string("meshes/armadillo_small.obj"));
+  loadMesh(armadillo, string("meshes/armadillo.obj"));
+  // loadMesh(armadillo, string("meshes/armadillo_small.obj"));
   armadillo->buildBVH();
   glm::mat4 translationMatrixArma = glm::translate(glm::vec3(-4, -3.0, 10));
   armadillo->setTransformation(translationMatrixArma);
   objects.push_back(armadillo);
 
   Figure* lucy = new Figure(mirror, WITHOUT_NORMALS);
-  // loadMesh(lucy, string("meshes/lucy.obj"));
-  loadMesh(lucy, string("meshes/lucy_small.obj"));
+  loadMesh(lucy, string("meshes/lucy.obj"));
+  // loadMesh(lucy, string("meshes/lucy_small.obj"));
   lucy->buildBVH();
   glm::mat4 translationMatrixLucy = glm::translate(glm::vec3(4.0, -3.0, 10));
   lucy->setTransformation(translationMatrixLucy);
@@ -671,23 +627,19 @@ glm::vec3 toneMapping(glm::vec3 intensity) {
 
 atomic<int> pixels_rendered(0);
 
-void renderTile(int startX, int endX, int startY, int endY, Image& image, 
-                float s, float X, float Y, int width, int height) {
+void renderTile(int startX, int endX, int startY, int endY, Image& image, float s, float X, float Y) {
+    float dx = X + s/2;
     for (int i = startX; i < endX; i++) {
-        for (int j = startY; j < endY; j++) {
-            float dx = X + i * s + s / 2;
-            float dy = Y - j * s - s / 2;
-            float dz = 1;
+      float dy = Y - s/2;
+      for (int j = startY; j < endY; j++) {
+        Ray ray(dx, dy, 1);
+        // image.setPixel(i, j, toneMapping(trace_ray(ray)));
+        image.setPixel(i, j, trace_ray(ray));
 
-            glm::vec3 origin(0, 0, 0);
-            glm::vec3 direction(dx, dy, dz);
-            direction = glm::normalize(direction);
-
-            Ray ray(origin, direction);
-            image.setPixel(i, j, toneMapping(trace_ray(ray)));
-            
-            pixels_rendered++;
-        }
+        pixels_rendered++;
+        dy -= s;
+      }
+      dx += s;
     }
 }
 
@@ -703,9 +655,10 @@ void printProgress(int totalPixels) {
 int main(int argc, const char* argv[]) {
     ios_base::sync_with_stdio(0);
     cin.tie(0);
-    auto t0 = chrono::high_resolution_clock::now();
-    int width = 1024*2;
-    int height = 768*2;
+    // auto t0 = chrono::high_resolution_clock::now();
+    clock_t t = clock();  // variable for keeping the time of the rendering
+    int width = 2048;
+    int height = 1536;
     float fov = 90;
 
     sceneDefinition();
@@ -716,39 +669,26 @@ int main(int argc, const char* argv[]) {
     float X = -s * width / 2;
     float Y = s * height / 2;
 
-    unsigned int numThreads = thread::hardware_concurrency();
-    if (numThreads == 0) numThreads = 4; // Fallback
-    cout << "Using " << numThreads << " threads" << endl;
-
-    // better cache locality, split by columns
-    vector<thread> threads;
-    int tileWidth = width / numThreads;
-    
     // progress thread
     thread progressThread(printProgress, width * height);
 
-    // render threads
-    for (int t = 0; t < numThreads; t++) {
-        int startX = t * tileWidth;
-        int endX = (t == numThreads - 1) ? width : (t + 1) * tileWidth;
+    renderTile(0, width, 0, height, image, s, X, Y);
 
-        threads.emplace_back(renderTile, startX, endX, 0, height, ref(image), s, X, Y, width, height);
-    }
-
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    
     progressThread.join();
 
-    auto t1 = chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
-    float seconds = duration.count() / 1000.0f;
-    float fps = 1.0f / seconds;
+    // auto t1 = chrono::high_resolution_clock::now();
+    // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
+    // float seconds = duration.count() / 1000.0f;
+    // float fps = 1.0f / seconds;
 
-    std::cout << "It took " << seconds << " seconds to render the image." << std::endl;
-    std::cout << "I could render at " << fps << " frames per second." << std::endl;
+    // std::cout << "It took " << seconds << " seconds to render the image." << std::endl;
+    // std::cout << "I could render at " << fps << " frames per second." << std::endl;
 
+    t = clock() - t;
+    cout << "It took " << ((float)t) / CLOCKS_PER_SEC
+         << " seconds to render the image." << endl;
+    cout << "I could render at " << (float)CLOCKS_PER_SEC / ((float)t)
+         << " frames per second." << endl;
     if (argc == 2) {
         image.writeImage(argv[1]);
     } else {
