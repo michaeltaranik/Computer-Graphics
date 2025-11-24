@@ -28,7 +28,7 @@ const float TOLERANCE = 2e-7;
 class Object;
 class Light;
 vector< Light* > lights;  
-glm::vec3 ambient_light(0.001, 0.001, 0.001);
+glm::vec3 ambient_light(0.1);
 vector< Object* > objects;
 
 class Ray {
@@ -68,7 +68,7 @@ class Object {
   glm::vec3 color;    
   Material material;  
 
-  virtual Hit intersect(Ray ray) = 0;
+  virtual Hit intersect(const Ray& ray) = 0;
   virtual ~Object() = default;
 
   Material getMaterial() { return material; }
@@ -100,8 +100,9 @@ public:
         max = glm::max(max, other.max);
     }
     
+    __attribute__((always_inline))
     bool intersect(const Ray& ray) const {
-        // Fast Ray-AABB intersection
+        // fast Ray-AABB intersection
         glm::vec3 invDir = 1.0f / ray.direction;
         glm::vec3 t1 = (min - ray.origin) * invDir;
         glm::vec3 t2 = (max - ray.origin) * invDir;
@@ -155,7 +156,8 @@ class Plane : public Object {
     this->material = material;
   }
   glm::vec3 getNormal() { return normal; }
-  Hit intersect(Ray ray) {
+  glm::vec3 getPoint() { return point; }
+  Hit intersect(const Ray& ray) {
     Hit hit;
     hit.hit = false;
 
@@ -179,38 +181,34 @@ class Plane : public Object {
 
 class Triangle : public Object {
  private:
-  Plane* plane;
+  // glm::vec3 edge1;
+  // glm::vec3 edge2;
   glm::vec3 v1;
   glm::vec3 v2;
   glm::vec3 v3;
-  vector<glm::vec3> n;
+  glm::vec3 n;
 
  public:
   Triangle(vector<glm::vec3> &vertices, Material material) {
     v1 = vertices[0];
     v2 = vertices[1];
     v3 = vertices[2];
-    glm::vec3 normal = glm::normalize(glm::cross(v2 - v1, v3 - v1));
-    plane = new Plane(vertices[0], normal, material);
     this->material = material;
+    n = glm::normalize(glm::cross(v2 - v1, v3 - v1));
   }
-  Triangle(vector<glm::vec3> vertices, vector<glm::vec3> normals, Material material) {
-    v1 = vertices[0];
-    v2 = vertices[1];
-    v3 = vertices[2];
-    glm::vec3 normal = glm::normalize(glm::cross(v2 - v1, v3 - v1));
-    n = normals;
-    plane = new Plane(vertices[0], normal, material);
+  Triangle(glm::vec3 v1, glm::vec3 v2, glm::vec3 v3, Material material)
+      : v1(v1), v2(v2), v3(v3) {
     this->material = material;
+    n = glm::normalize(glm::cross(v2 - v1, v3 - v1));
   }
   glm::vec3 getV1() const { return v1; }
   glm::vec3 getV2() const { return v2; }
   glm::vec3 getV3() const { return v3; }
   ~Triangle() {
-    delete plane;
   }
 
-  Hit intersect(Ray ray) {
+  __attribute__((always_inline))
+  Hit intersect(const Ray& ray) {
     Hit hit;
     hit.hit = false;
     hit.distance = INFINITY;
@@ -221,7 +219,7 @@ class Triangle : public Object {
     glm::vec3 h = glm::cross(ray.direction, edge2);
     float a = glm::dot(edge1, h);
 
-    if (fabs(a) < TOLERANCE) return hit;  // ray parallel to triangle
+    if (__builtin_expect(fabs(a) < TOLERANCE, 0)) return hit;
 
     float f = 1.0f / a;
     glm::vec3 s = ray.origin - v1;
@@ -241,7 +239,7 @@ class Triangle : public Object {
       hit.hit = true;
       hit.distance = t;
       hit.intersection = ray.origin + t * ray.direction;
-      hit.normal = glm::normalize(glm::cross(edge1, edge2));
+      hit.normal = n;
       hit.object = this;
     }
 
@@ -252,14 +250,11 @@ class Triangle : public Object {
 class Figure : public Object {
  private:
   vector< Triangle* > meshes;
-  int mode;
   BVHNode* bvhRoot = nullptr;
 
  public:
   Figure(Material material, int m) {
     setMaterial(material);
-    mode = m;
-    meshes.reserve(10e3);
   }
 
   ~Figure() {
@@ -272,9 +267,7 @@ class Figure : public Object {
 
   void buildBVH() {
     if (meshes.empty()) return;
-
-    vector< Triangle* > triangles = meshes;  // copy for building
-    bvhRoot = buildBVHNode(triangles, 0, triangles.size(), 0);
+    bvhRoot = buildBVHNode(meshes, 0, meshes.size(), 0);
     cout << "BVH built for figure with " << meshes.size() << " triangles"
          << endl;
   }
@@ -284,9 +277,7 @@ class Figure : public Object {
     meshes.push_back(tr);
   }
 
-  int getMode() { return mode; }
-
-  Hit intersect(Ray ray) {
+  Hit intersect(const Ray& ray) {
     Hit closest_hit;
     closest_hit.distance = INFINITY;
     closest_hit.hit = false;
@@ -380,7 +371,6 @@ BVHNode* buildBVHNode(vector<Triangle*>& triangles, int start, int end, int dept
       return closest_hit;
     }
 
-    // Check both children
     Hit hit_left = intersectBVH(node->left, localRay);
     Hit hit_right = intersectBVH(node->right, localRay);
 
@@ -393,199 +383,245 @@ BVHNode* buildBVHNode(vector<Triangle*>& triangles, int start, int end, int dept
 
 glm::vec3 PhongModel(const Hit &hit, const glm::vec3 &view_direction) {
   glm::vec3 color(0.0);
+  const Material& mat = hit.object->getMaterial();
 
   for (int light_num = 0; light_num < lights.size(); light_num++) {
     glm::vec3 light_direction = glm::normalize(lights[light_num]->position - hit.intersection);
+    float lightDistance = glm::distance(lights[light_num]->position, hit.intersection);
 
     bool in_shadow = false;
-    Ray shadowRay(hit.intersection + (100.0f * TOLERANCE * hit.normal), light_direction);
+    Ray shadowRay(hit.intersection + (100.0f * TOLERANCE * light_direction), light_direction);
+    
     for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
-      Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
-      if (shadow_hit.hit && shadow_hit.distance < glm::distance(lights[light_num]->position, hit.intersection)) {
-        in_shadow = true;
-        break;
-      }
+        Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
+        if (shadow_hit.hit && shadow_hit.distance < lightDistance) {
+            in_shadow = true;
+            break;
+        }
     }
 
     if (in_shadow) continue;
+    
     float NdotL = glm::clamp(glm::dot(hit.normal, light_direction), 0.0f, 1.0f);
-
-    glm::vec3 diffuse_color = hit.object->getMaterial().diffuse;
-    glm::vec3 diffuse = diffuse_color * glm::vec3(NdotL);
-    color += lights[light_num]->color * diffuse;
+    color += lights[light_num]->color * mat.diffuse * glm::vec3(NdotL);
   }
-  color += ambient_light * hit.object->getMaterial().ambient;
-  color = glm::clamp(color, glm::vec3(0.0), glm::vec3(1.0));
-  return color;
+  
+  color += ambient_light * mat.ambient;
+  return glm::clamp(color, glm::vec3(0.0), glm::vec3(1.0));
 }
 
 glm::vec3 trace_ray(const Ray &ray) {
-  Hit closest_hit;
+    Hit closest_hit;
+    closest_hit.hit = false;
+    closest_hit.distance = INFINITY;
 
-  closest_hit.hit = false;
-  closest_hit.distance = INFINITY;
+    for (int k = 0; k < objects.size(); k++) {
+        Hit hit = objects[k]->intersect(ray);
+        
+        if (hit.hit && hit.distance < closest_hit.distance) {
+            closest_hit = hit;
+            if (closest_hit.distance < 0.1f) break;
+        }
+    }
 
-  for (int k = 0; k < objects.size(); k++) {
-    Hit hit = objects[k]->intersect(ray);
-    if (hit.hit == true && hit.distance < closest_hit.distance)
-      closest_hit = hit;
-  }
-
-  glm::vec3 color(0.0);
-  if (closest_hit.hit) {
-    color = PhongModel(closest_hit, glm::normalize(-ray.direction));
-  }
-  return color;
+    glm::vec3 color(0.0);
+    if (closest_hit.hit) {
+        color = PhongModel(closest_hit, glm::normalize(-ray.direction));
+    }
+    return color;
 }
 
 struct FaceData {
-    int v, t, n;
+    int v[3];  // fixed size for triangles
+    int count = 0;
 };
 
-FaceData parseFaceToken(const string& faceData, Figure* figure) {
-    FaceData result = {-1, -1, -1};
-    string processed = faceData;
-
-    switch (figure->getMode()) {
-      case WITH_CUSTOM_FACE: {
-        // format: v/t/n - replace all slashes with spaces
-        replace(processed.begin(), processed.end(), '/', ' ');
-        break;
-      }
-      case WITH_NORMALS: {
-        // format: v//n - replace double slash with space
-        size_t pos = processed.find("//");
-        if (pos != string::npos) {
-          processed.replace(pos, 2, " ");
+// inline for performance
+inline FaceData parseFaceToken(const char* faceData, int length) {
+    FaceData result;
+    result.count = 0;
+    
+    const char* ptr = faceData;
+    const char* end = faceData + length;
+    
+    // fast parsing of v// format
+    while (ptr < end && result.count < 3) {
+        // parse vertex index
+        int val = 0;
+        while (ptr < end && *ptr >= '0' && *ptr <= '9') {
+            val = val * 10 + (*ptr - '0');
+            ptr++;
         }
-        break;
-      }
-      default:
-        // format: v - no processing needed
-        break;
+        result.v[result.count++] = val;
+        
+        // skip to next number
+        while (ptr < end && (*ptr < '0' || *ptr > '9')) {
+            ptr++;
+        }
     }
-
-    istringstream faceStream(processed);
-    
-    switch (figure->getMode()) {
-        case WITH_CUSTOM_FACE:
-            faceStream >> result.v >> result.t >> result.n;
-            break;
-        case WITH_NORMALS:
-            faceStream >> result.v >> result.n;
-            break;
-        case WITHOUT_NORMALS:
-            faceStream >> result.v;
-            break;
-    }
-    
     return result;
 }
 
-bool validateFaceData(const vector<int>& vIndices, const vector<int>& nIndices, Figure* figure) {
-    if (vIndices.size() != 3) return false;
+// no vector copies, directly with indices
+inline void processFace(Figure* figure, const char* line, size_t len, 
+                       const vector<glm::vec3>& vertices, const Material& mat) {
+    FaceData data;
+    const char* ptr = line;
+    const char* end = line + len;
     
-    switch (figure->getMode()) {
-        case WITHOUT_NORMALS:
-            return true;
-        case WITH_NORMALS:
-        case WITH_CUSTOM_FACE:
-            return nIndices.size() == 3;
-        default:
-            return false;
-    }
-}
-
-vector<glm::vec3> getVertices(const vector<int>& vIndices, const vector<glm::vec3>& vertices) {
-    return {
-        vertices[vIndices[0]],
-        vertices[vIndices[1]], 
-        vertices[vIndices[2]]
-    };
-}
-
-vector<glm::vec3> getNormals(const vector<int>& nIndices, const vector<glm::vec3>& normals) {
-    return {
-        normals[nIndices[0]],
-        normals[nIndices[1]],
-        normals[nIndices[2]]
-    };
-}
-
-void processFace(Figure* figure, istringstream& iss, 
-                vector<glm::vec3>& normals, vector<glm::vec3>& vertices, 
-                Material mat) {
+    // skip initial whitespace after 'f'
+    while (ptr < end && (*ptr == ' ' || *ptr == '\t')) ptr++;
     
-    vector<int> vIndices;
-    vector<int> nIndices;
-    string faceData;
-    
-    while (iss >> faceData) {
-        FaceData data = parseFaceToken(faceData, figure);
+    int vertexIndices[3];
+    int count = 0;
+
+    while (ptr < end && count < 3) {
+        const char* tokenStart = ptr;
         
-        if (data.v != -1) vIndices.push_back(data.v);
-        if (data.n != -1) nIndices.push_back(data.n);
+        // fiind end of token
+        while (ptr < end && *ptr != ' ' && *ptr != '\t' && *ptr != '\r') ptr++;
+        
+        if (ptr > tokenStart) {
+            FaceData tokenData = parseFaceToken(tokenStart, ptr - tokenStart);
+            if (tokenData.count > 0) {
+                vertexIndices[count++] = tokenData.v[0]; // only need vertex index
+            }
+        }
+        
+        // skip whitespace
+        while (ptr < end && (*ptr == ' ' || *ptr == '\t')) ptr++;
     }
-    
-    if (!validateFaceData(vIndices, nIndices, figure)) {
-        cerr << "Warning: #indices - " << vIndices.size();
-        cerr << " #normals - " << nIndices.size() << endl;
-        return;
-    }
-    
-    vector<glm::vec3> triangleVertices = getVertices(vIndices, vertices);
-    
-    if (figure->getMode() == WITHOUT_NORMALS) {
-        figure->addMesh(new Triangle(triangleVertices, mat));
-    } else {
-        vector<glm::vec3> triangleNormals = getNormals(nIndices, normals);
-        figure->addMesh(new Triangle(triangleVertices, triangleNormals, mat));
+
+    if (count == 3) {
+      figure->addMesh(new Triangle(vertices[vertexIndices[0]],
+                                   vertices[vertexIndices[1]],
+                                   vertices[vertexIndices[2]], mat));
     }
 }
 
-void loadMesh(Figure* figure, string filename) {
-	string line;
-	ifstream file(filename);
+inline float fastAtof(const char*&);
 
-	if (!file.is_open()) {
-		cerr << "Error: could not open the file: " << filename << endl;
-		exit(1);
-	}
+void loadMesh(Figure* figure, const string& filename) {
+    ifstream file(filename, ios::binary | ios::ate);
+    if (!file.is_open()) {
+        cerr << "Error: could not open the file: " << filename << endl;
+        exit(1);
+    }
+    
+    // read entire file into memory for fastest parsing
+    streamsize size = file.tellg();
+    file.seekg(0, ios::beg);
+    vector<char> buffer(size + 1);
+    file.read(buffer.data(), size);
+    buffer[size] = '\0';
+    file.close();
+    
+    vector<glm::vec3> vertices;
+    // vertices.reserve(100000);
+    vertices.push_back(glm::vec3(0.0f)); // 0 placeholder
+    
+    const Material& mat = figure->getMaterial();
+    int faces = 0;
+    
+    const char* ptr = buffer.data();
+    const char* end = buffer.data() + size;
+    
+    while (ptr < end) {
+        // skip whitespace and empty lines
+        while (ptr < end && (*ptr == ' ' || *ptr == '\t' || *ptr == '\n' || *ptr == '\r')) {
+            ptr++;
+        }
+        if (ptr >= end) break;
+        
+        // check line type
+        if (*ptr == 'v' && (ptr[1] == ' ' || ptr[1] == '\t')) {
+            // vertex line
+            ptr += 2; // skip "v "
+            glm::vec3 vertex;
+            
+            vertex.x = fastAtof(ptr);
+            while (*ptr && *ptr != ' ' && *ptr != '\t' && *ptr != '\n') ptr++;
+            while (*ptr && (*ptr == ' ' || *ptr == '\t')) ptr++;
+            
+            vertex.y = fastAtof(ptr);
+            while (*ptr && *ptr != ' ' && *ptr != '\t' && *ptr != '\n') ptr++;
+            while (*ptr && (*ptr == ' ' || *ptr == '\t')) ptr++;
+            
+            vertex.z = fastAtof(ptr);
+            while (*ptr && *ptr != '\n' && *ptr != '\r') ptr++;
+            
+            vertices.push_back(vertex);
+        }
+        else if (*ptr == 'f' && (ptr[1] == ' ' || ptr[1] == '\t')) {
+            // parse in place, face line
+            ptr += 2; // skip "f "
+            const char* lineStart = ptr;
+            
+            // f end of line
+            while (ptr < end && *ptr != '\n' && *ptr != '\r') ptr++;
+            
+            processFace(figure, lineStart, ptr - lineStart, vertices, mat);
+            faces++;
+        }
+        else {
+            // skip other lines (comments, etc.)
+            while (ptr < end && *ptr != '\n' && *ptr != '\r') ptr++;
+        }
+        
+        // skip line endings
+        while (ptr < end && (*ptr == '\n' || *ptr == '\r')) ptr++;
+    }
+    
+    cout << "Finished loading mesh from: " << filename << endl;
+    cout << "Vertices: " << vertices.size() << "; ";
+    cout << "Polygons: " << faces << endl;
+}
 
-	vector<glm::vec3> vertices(1, glm::vec3(0.0f));
-	vector<glm::vec3> normals(1, glm::vec3(0.0f));
-  int faces = 0;
-
-	while (getline(file, line)) {
-		if (line.empty() || line[0] == '#') continue;
-
-		istringstream iss(line);
-		string token;
-		iss >> token;
-
-		if (token == "v") {
-			glm::vec3 vertex;
-			iss >> vertex.x >> vertex.y >> vertex.z;
-			vertices.push_back(vertex);
-		} else if (token == "f") {
-      processFace(figure, iss, normals, vertices, figure->getMaterial());
-      ++faces;
-		}
-	}
-
-	cout << "Finished loading mesh from: " << filename << endl;
-	cout << "Vertices: " << vertices.size() << "; ";
-	cout << "Normals: " << normals.size() << "; ";
-	cout << "Polygons: " << faces << endl;
-	file.close();
+// fast ascii to float conversion
+inline float fastAtof(const char*& p) {
+    float sign = 1.0f;
+    float value = 0.0f;
+    float fraction = 1.0f;
+    bool hasFraction = false;
+    
+    // sign
+    if (*p == '-') {
+        sign = -1.0f;
+        p++;
+    } else if (*p == '+') {
+        p++;
+    }
+    
+    // integer part
+    while (*p >= '0' && *p <= '9') {
+        value = value * 10.0f + (*p - '0');
+        p++;
+    }
+    
+    // fraction part
+    if (*p == '.') {
+        hasFraction = true;
+        p++;
+        while (*p >= '0' && *p <= '9') {
+            value = value * 10.0f + (*p - '0');
+            fraction *= 10.0f;
+            p++;
+        }
+    }
+    
+    return sign * (hasFraction ? value / fraction : value);
 }
 
 void sceneDefinition() {
-  Material mirror;
-  mirror.diffuse = glm::vec3(0.7);
-  // mirror.ambient = glm::vec3(0.7);
+  objects.push_back(new Plane(glm::vec3(0, -3, 0), glm::vec3(0.0, 1, 0)));
+  objects.push_back(new Plane(glm::vec3(0, 1, 30), glm::vec3(0.0, 0.0, -1.0)));
+  objects.push_back(new Plane(glm::vec3(-15, 1, 0), glm::vec3(1.0, 0.0, 0.0)));
+  objects.push_back(new Plane(glm::vec3(15, 1, 0), glm::vec3(-1.0, 0.0, 0.0)));
+  Material greyish;
+  // greyish.diffuse = glm::vec3(0.7);
+  greyish.ambient = glm::vec3(0.99);
 
-  Figure* bunny = new Figure(mirror, WITHOUT_NORMALS);
+  Figure* bunny = new Figure(greyish, WITHOUT_NORMALS);
   loadMesh(bunny, string("meshes/bunny.obj"));
   // loadMesh(bunny, string("meshes/bunny_small.obj"));
   bunny->buildBVH();
@@ -593,7 +629,7 @@ void sceneDefinition() {
   bunny->setTransformation(translationMatrixBunny);
   objects.push_back(bunny);
 
-  Figure* armadillo = new Figure(mirror, WITHOUT_NORMALS);
+  Figure* armadillo = new Figure(greyish, WITHOUT_NORMALS);
   loadMesh(armadillo, string("meshes/armadillo.obj"));
   // loadMesh(armadillo, string("meshes/armadillo_small.obj"));
   armadillo->buildBVH();
@@ -601,7 +637,7 @@ void sceneDefinition() {
   armadillo->setTransformation(translationMatrixArma);
   objects.push_back(armadillo);
 
-  Figure* lucy = new Figure(mirror, WITHOUT_NORMALS);
+  Figure* lucy = new Figure(greyish, WITHOUT_NORMALS);
   loadMesh(lucy, string("meshes/lucy.obj"));
   // loadMesh(lucy, string("meshes/lucy_small.obj"));
   lucy->buildBVH();
@@ -612,11 +648,6 @@ void sceneDefinition() {
   lights.push_back(new Light(glm::vec3(0, 26, 5), glm::vec3(0.2)));
   lights.push_back(new Light(glm::vec3(0, 1, 12), glm::vec3(0.3)));
   lights.push_back(new Light(glm::vec3(0, 5, 1), glm::vec3(0.3)));
-
-  objects.push_back(new Plane(glm::vec3(0, -3, 0), glm::vec3(0.0, 1, 0)));
-  objects.push_back(new Plane(glm::vec3(0, 1, 30), glm::vec3(0.0, 0.0, -1.0)));
-  objects.push_back(new Plane(glm::vec3(-15, 1, 0), glm::vec3(1.0, 0.0, 0.0)));
-  objects.push_back(new Plane(glm::vec3(15, 1, 0), glm::vec3(-1.0, 0.0, 0.0)));
 }
 
 glm::vec3 toneMapping(glm::vec3 intensity) {
@@ -657,11 +688,15 @@ int main(int argc, const char* argv[]) {
     cin.tie(0);
     // auto t0 = chrono::high_resolution_clock::now();
     clock_t t = clock();  // variable for keeping the time of the rendering
-    int width = 2048;
-    int height = 1536;
+    int multiplier = 1;
+    int width = 2048*multiplier;
+    int height = 1536*multiplier;
     float fov = 90;
 
     sceneDefinition();
+    // clock_t tsd = clock() - t;
+    // cout << "It took " << ((float)tsd) / CLOCKS_PER_SEC
+    //      << " seconds to define the scene." << endl;
 
     Image image(width, height);
     
@@ -670,11 +705,11 @@ int main(int argc, const char* argv[]) {
     float Y = s * height / 2;
 
     // progress thread
-    thread progressThread(printProgress, width * height);
+    // thread progressThread(printProgress, width * height);
 
     renderTile(0, width, 0, height, image, s, X, Y);
 
-    progressThread.join();
+    // progressThread.join();
 
     // auto t1 = chrono::high_resolution_clock::now();
     // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
@@ -683,6 +718,11 @@ int main(int argc, const char* argv[]) {
 
     // std::cout << "It took " << seconds << " seconds to render the image." << std::endl;
     // std::cout << "I could render at " << fps << " frames per second." << std::endl;
+
+
+    // clock_t trender = clock() - tsd;
+    // cout << "It took " << ((float)trender) / CLOCKS_PER_SEC
+    //      << " seconds to intersect and render the scene." << endl;
 
     t = clock() - t;
     cout << "It took " << ((float)t) / CLOCKS_PER_SEC
