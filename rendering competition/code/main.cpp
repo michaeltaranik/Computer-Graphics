@@ -79,6 +79,83 @@ class Object {
   }
 };
 
+class Box : public Object {
+private:
+    glm::vec3 minBound;
+    glm::vec3 maxBound;
+
+public:
+    // Create a box defined by min and max points (local space)
+    Box(glm::vec3 min, glm::vec3 max, Material mat) : minBound(min), maxBound(max) {
+        this->material = mat;
+    }
+
+    Hit intersect(Ray ray) {
+        Hit hit;
+        hit.hit = false;
+
+        // 1. Transform Ray from World Space to Object (Local) Space
+        // We do this so we can intersect with a simple AABB at (0,0,0)
+        glm::vec3 localOrigin = glm::vec3(inverseTransformationMatrix * glm::vec4(ray.origin, 1.0f));
+        glm::vec3 localDir = glm::vec3(inverseTransformationMatrix * glm::vec4(ray.direction, 0.0f));
+        
+        // Normalize direction for accurate slab calculation
+        // (Note: This means 't' will be in local distance units, so we must recalculate world distance later)
+        localDir = glm::normalize(localDir);
+
+        // 2. Slab Method Intersection
+        float tMin = 0.001f; 
+        float tMax = 100000.0f;
+        
+        glm::vec3 bounds[2] = {minBound, maxBound};
+        glm::vec3 axisNormal(0.0f); // Temporary normal storage
+        int hitAxis = -1; 
+
+        for (int i = 0; i < 3; ++i) { // Check X, Y, Z slabs
+            float invD = 1.0f / localDir[i];
+            float t0 = (bounds[0][i] - localOrigin[i]) * invD;
+            float t1 = (bounds[1][i] - localOrigin[i]) * invD;
+
+            float sign = -1.0f; // Default: we hit the 'min' plane (normal points negative)
+
+            if (invD < 0.0f) {
+                std::swap(t0, t1);
+                sign = 1.0f;    // We hit the 'max' plane (normal points positive)
+            }
+
+            if (t0 > tMin) {
+                tMin = t0;
+                hitAxis = i;
+                axisNormal = glm::vec3(0.0f);
+                axisNormal[i] = sign;
+            }
+            tMax = std::min(tMax, t1);
+
+            if (tMax <= tMin) return hit; // Ray missed the box
+        }
+
+        // 3. Valid Hit
+        if (hitAxis != -1) {
+            hit.hit = true;
+            
+            // Calculate hit point in LOCAL space
+            glm::vec3 localHitPoint = localOrigin + tMin * localDir;
+
+            // Transform hit point back to WORLD space
+            hit.intersection = glm::vec3(transformationMatrix * glm::vec4(localHitPoint, 1.0f));
+            
+            // Transform normal back to WORLD space
+            hit.normal = glm::normalize(glm::vec3(normalMatrix * glm::vec4(axisNormal, 0.0f)));
+            
+            // Recalculate accurate world distance
+            hit.distance = glm::distance(ray.origin, hit.intersection);
+            hit.object = this;
+        }
+
+        return hit;
+    }
+};
+
 // Helper for random float in [0, 1]
 float random_float() {
     return static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
@@ -440,87 +517,108 @@ glm::vec3 WardModel(const Ray &ray, const Hit &hit) {
 }
 
 glm::vec3 PhongModel(const Ray &ray, const Hit &hit) {
-  glm::vec3 color(0.0);
-  Material mat = hit.object->getMaterial();
+    glm::vec3 color(0.0);
+    Material mat = hit.object->getMaterial();
 
-  for (int light_num = 0; light_num < lights.size(); light_num++) {
-    Light* currentLight = lights[light_num];
-    glm::vec3 light_direction = glm::normalize(currentLight->position - hit.intersection);
-    float spotFactor = 1.0f;
-    
-    // --- SHADOW CALCULATION START ---
-    float shadowPercent = 0.0f;
-    float shadowRigidness = 0.98f;
+    for (int light_num = 0; light_num < lights.size(); light_num++) {
+        Light* currentLight = lights[light_num];
+        glm::vec3 light_direction = glm::normalize(currentLight->position - hit.intersection);
+        
+        // --- SHADOW CALCULATION START ---
+        float shadowFactor = 0.0f; // 0.0 = In Shadow, 1.0 = Fully Lit
 
-    if (currentLight->radius > 0.0f) {
-        // === SOFT SHADOWS (Area Light) ===
-        int shadow_samples = 16; // Number of shadow rays
-        float shadow_hits = 0.0f;
+        if (currentLight->radius > 0.0f) {
+            // === SOFT SHADOWS (Area Light) ===
+            int shadow_samples = 16; 
+            float visible_samples = 0.0f;
 
-        for (int s = 0; s < shadow_samples; ++s) {
-            // Pick a random point on the light sphere
-            // Simple method: random point in unit sphere * radius + position
-            glm::vec3 random_point = glm::vec3(random_range(-1,1), random_range(-1,1), random_range(-1,1));
-            random_point = glm::normalize(random_point) * currentLight->radius;
-            glm::vec3 samplePos = currentLight->position + random_point;
+            for (int s = 0; s < shadow_samples; ++s) {
+                // 1. Randomize point on light source
+                glm::vec3 random_point = glm::vec3(random_range(-1,1), random_range(-1,1), random_range(-1,1));
+                random_point = glm::normalize(random_point) * currentLight->radius;
+                glm::vec3 samplePos = currentLight->position + random_point;
 
-            glm::vec3 sampleDir = glm::normalize(samplePos - hit.intersection);
-            Ray shadowRay(hit.intersection + sampleDir * TOLERANCE, sampleDir);
-            float distToLight = glm::distance(samplePos, hit.intersection);
+                // 2. Setup Ray
+                glm::vec3 sampleDir = glm::normalize(samplePos - hit.intersection);
+                Ray shadowRay(hit.intersection + sampleDir * TOLERANCE, sampleDir);
+                float distToLight = glm::distance(samplePos, hit.intersection);
 
-            bool hit_something = false;
-            for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
+                // 3. Trace Shadow Ray
+                float light_transmission = 1.0f; // Start with full light
+
+                for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
+                    Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
+                    
+                    if (shadow_hit.hit && shadow_hit.distance < distToLight) {
+                        Material objMat = objects[obj_num]->getMaterial();
+
+                        // Ignore Emissive objects (the light itself)
+                        if (objMat.type == EMISSIVE) continue;
+
+                        if (objMat.krefract > 0.0f) {
+                            // --- GLASS SHADOW TRICK ---
+                            // Instead of ignoring glass, we say it blocks some light.
+                            // 0.6 means 60% of light gets through (Light Grey Shadow)
+                            // 0.0 means 0% gets through (Solid Black Shadow)
+                            light_transmission *= 0.6f; 
+                        } else {
+                            // Hit a solid object (Wall/Mirror) -> Block light completely
+                            light_transmission = 0.0f;
+                            break; // Stop checking, we are blocked
+                        }
+                    }
+                }
+                visible_samples += light_transmission;
+            }
+            shadowFactor = visible_samples / (float)shadow_samples;
+
+        } else {
+            // === HARD SHADOWS (Point Light) ===
+            // (Keep your existing hard shadow logic here if needed, 
+            //  or apply the same transmission logic)
+             Ray shadowRay(hit.intersection + light_direction * TOLERANCE, light_direction);
+             float distToLight = glm::distance(currentLight->position, hit.intersection);
+             float transmission = 1.0f;
+             
+             for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
                  Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
                  if (shadow_hit.hit && shadow_hit.distance < distToLight) {
-                     if (objects[obj_num]->getMaterial().krefract > 0.0f) continue;
-                     if (objects[obj_num]->getMaterial().type == EMISSIVE) continue; 
-                     
-                     hit_something = true;
-                     break;
+                     if (objects[obj_num]->getMaterial().krefract > 0.0f) {
+                         transmission *= 0.6f; // Glass blocks partial light
+                     } else {
+                         transmission = 0.0f;
+                         break;
+                     }
                  }
-            }
-            if (hit_something) shadow_hits += 1.0f;
-        }
-        shadowPercent = shadow_hits / (float)shadow_samples;
-
-    } else {
-        // === HARD SHADOWS (Point/Spot Light) ===
-        Ray shadowRay(hit.intersection + light_direction * TOLERANCE, light_direction);
-        float distToLight = glm::distance(currentLight->position, hit.intersection);
-        
-        for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
-             Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
-             if (shadow_hit.hit && shadow_hit.distance < distToLight) {
-                 // Check transparency
-                 shadowPercent += (1.0f - objects[obj_num]->getMaterial().krefract) * shadowRigidness;
              }
+             shadowFactor = transmission;
         }
+        // --- SHADOW CALCULATION END ---
+
+        // Spotlight check (unchanged)
+        if (currentLight->cutoffAngleCos > 0.0f) {
+             float dot = glm::dot(light_direction, -currentLight->direction);
+             if (dot < currentLight->cutoffAngleCos) continue;
+        }
+
+        // Standard Phong Lighting (Diffuse + Specular)
+        glm::vec3 reflected_direction = glm::reflect(-light_direction, hit.normal);
+        float NdotL = glm::clamp(glm::dot(hit.normal, light_direction), 0.0f, 1.0f);
+        float VdotR = glm::clamp(glm::dot(-ray.direction, reflected_direction), 0.0f, 1.0f);
+
+        glm::vec3 diffuse_color = mat.diffuse;
+        glm::vec3 diffuse = diffuse_color * glm::vec3(NdotL);
+        glm::vec3 specular = mat.specular * glm::vec3(pow(VdotR, mat.shininess));
+
+        float dist = glm::distance(currentLight->position, hit.intersection);
+        float attenuation = 1.0f / (1.0f + 0.1f * dist + 0.01f * dist * dist);
+
+        // Apply Shadow Factor
+        color += currentLight->color * (diffuse + specular) * attenuation * shadowFactor;
     }
-    // --- SHADOW CALCULATION END ---
 
-    if (currentLight->cutoffAngleCos > 0.0f) {
-      float dot = glm::dot(light_direction, -currentLight->direction);
-      if (dot < currentLight->cutoffAngleCos) {
-        continue; // this pixel is not lit by this spotlight, skip it
-      }
-      spotFactor = pow(dot, currentLight->exp);
-    }
-
-    glm::vec3 reflected_direction = glm::reflect(-light_direction, hit.normal);
-    float NdotL = glm::clamp(glm::dot(hit.normal, light_direction), 0.0f, 1.0f);
-    float VdotR = glm::clamp(glm::dot(-ray.direction, reflected_direction), 0.0f, 1.0f);
-
-    glm::vec3 diffuse_color = mat.diffuse;
-    glm::vec3 diffuse = diffuse_color * glm::vec3(NdotL);
-    glm::vec3 specular = mat.specular * glm::vec3(pow(VdotR, mat.shininess));
-
-    float dist = glm::distance(lights[light_num]->position, hit.intersection);
-    float attenuation = 1.0f / (1.0f + 0.1f * dist + 0.01f * dist * dist);
-    color += lights[light_num]->color * (diffuse + specular) * attenuation * (1 - shadowPercent);
-  }
-
-  color += ambient_light * mat.ambient;
-  return color;
+    color += ambient_light * mat.ambient;
+    return color;
 }
 
 glm::vec3 trace_reflection(const Ray &ray, const Hit &hit, int depth) {
@@ -724,9 +822,10 @@ void sceneDefinition() {
     // ============================
 
     // Left: Ward Sphere
-    objects.push_back(new Sphere(2.0f, glm::vec3(-3.0f, -3.0f, 12.0f), gold_ward));
+    objects.push_back(new Sphere(2.0f, glm::vec3(-3.0f, -3.0f, 8.0f), gold_ward));
 
     // Right: Mirror Sphere
+    objects.push_back(new Sphere(1.5f, glm::vec3(3.0f, 1.0f, 14.0f), glass));
     objects.push_back(new Sphere(1.5f, glm::vec3(3.0f, -3.0f, 10.0f), glass));
     
     // Center Back: Blue Sphere
@@ -738,7 +837,8 @@ void sceneDefinition() {
 
     glm::vec3 lightPos = glm::vec3(0, 4.9f, 10.0f); // Nearly touching ceiling
     float lightRadius = 1.5f;
-    glm::vec3 lightColor = glm::vec3(0.8f);
+    glm::vec3 lightColor = glm::vec3(1.0f, 173.0f/255.0f, 237.0f/255.f);
+    lightColor *= 0.7f;
 
     // 1. Add Visible Sphere (Fixes Black Hole)
     objects.push_back(new Sphere(lightRadius, lightPos, light_mat));
