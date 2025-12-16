@@ -2,3 +2,14 @@ cpp.sh
 a.out
 result.ppm
 settings.json
+rendering\ competition/code/glm/
+glm/
+.DS_Store
+taranik.zip
+*.pdf
+*.obj
+*.mov
+*.png
+*.tex
+taranik/
+README.md
