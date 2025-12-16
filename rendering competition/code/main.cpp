@@ -821,12 +821,38 @@ void sceneDefinition() {
     // 3. OBJECTS 
     // ============================
 
+
+    glm::vec3 minB(-0.5f);
+    glm::vec3 maxB(0.5f);
+    Box* tallBox = new Box(minB, maxB, matte_white);
+    
+    // Transformation: Scale(3x6x3) -> Rotate(17 deg) -> Translate
+    glm::mat4 tallTransform = glm::mat4(1.0f);
+    tallTransform = glm::translate(tallTransform, glm::vec3(-2.0f, -2.0f, 12.0f)); // Position
+    tallTransform = glm::rotate(tallTransform, glm::radians(17.0f), glm::vec3(0, 1, 0)); // Rotation Y
+    tallTransform = glm::scale(tallTransform, glm::vec3(3.0f, 6.0f, 3.0f)); // Size
+    
+    tallBox->setTransformation(tallTransform);
+    // objects.push_back(tallBox);
+
+    // --- Short Box (Right) ---
+    Box* shortBox = new Box(minB, maxB, matte_white);
+
+    // Transformation: Scale(3x3x3) -> Rotate(-17 deg) -> Translate
+    glm::mat4 shortTransform = glm::mat4(1.0f);
+    shortTransform = glm::translate(shortTransform, glm::vec3(2.0f, -3.5f, 10.0f)); // Position
+    shortTransform = glm::rotate(shortTransform, glm::radians(-17.0f), glm::vec3(0, 1, 0)); // Rotation Y
+    shortTransform = glm::scale(shortTransform, glm::vec3(3.0f, 3.0f, 3.0f)); // Size
+    
+    shortBox->setTransformation(shortTransform);
+    objects.push_back(shortBox);
+
     // Left: Ward Sphere
     objects.push_back(new Sphere(2.0f, glm::vec3(-3.0f, -3.0f, 8.0f), gold_ward));
 
     // Right: Mirror Sphere
     objects.push_back(new Sphere(1.5f, glm::vec3(3.0f, 1.0f, 14.0f), glass));
-    objects.push_back(new Sphere(1.5f, glm::vec3(3.0f, -3.0f, 10.0f), glass));
+    objects.push_back(new Sphere(1.5f, glm::vec3(2.0f, -0.7f, 10.0f), glass));
     
     // Center Back: Blue Sphere
     objects.push_back(new Sphere(2.5f, glm::vec3(0.0f, -3.5f, 16.0f), mirror));
@@ -835,7 +861,7 @@ void sceneDefinition() {
     // 4. LIGHTING 
     // ============================
 
-    glm::vec3 lightPos = glm::vec3(0, 4.9f, 10.0f); // Nearly touching ceiling
+    glm::vec3 lightPos = glm::vec3(0, 5.2f, 10.0f); // Nearly touching ceiling
     float lightRadius = 1.5f;
     glm::vec3 lightColor = glm::vec3(1.0f, 173.0f/255.0f, 237.0f/255.f);
     lightColor *= 0.7f;
