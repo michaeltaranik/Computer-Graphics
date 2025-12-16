@@ -3,6 +3,7 @@
 */
 
 #include <atomic>
+#include <iomanip>
 #include <cmath>
 #include <ctime>
 #include <fstream>
@@ -19,11 +20,11 @@
 
 using namespace std;
 
-#define TOLERANCE 1e-5f
+#define TOLERANCE 1e-4f
 #define MAX_RECURSION_DEPTH 5
-#define AA_SAMPLES 1
-#define APERTURE_RADIUS 0.0f
-#define FOCAL_DISTANCE 12.0f
+#define AA_SAMPLES 64
+#define APERTURE_RADIUS 0.2f
+#define FOCAL_DISTANCE 13.0f
 
 /**
   Class representing a single ray.
@@ -599,10 +600,16 @@ struct FogBlob
 
 // A few Gaussian "smoke" blobs in the scene, placed towards the back so that
 // fog mainly appears in the background rather than around the foreground objects.
-vector<FogBlob> fogBlobs = {
-    // Light fog around the light source (creates volumetric light effect)
-    {glm::vec3(0.0f, 4.9f, 10.0f), 1.5f, 0.2f},
+vector<FogBlob> fogBlobs; 
+
+struct FogSettings {
+    bool enabled = true;
+    glm::vec3 color = glm::vec3(0.8f, 0.85f, 0.9f); // Light blue-grey
+    float absorption = 0.3f;      // Global thickness multiplier (sigma_a)
+    int stepCount = 64;           // Quality vs Performance (16-128)
 };
+
+FogSettings globalFog; // Create a global instance
 
 // Returns volumetric density at point p using a sum of Gaussian blobs.
 // This implements a simple "metaball" style density field.
@@ -624,31 +631,33 @@ float getDensity(const glm::vec3 &p)
 // Compute Beer-Lambert transmittance along the ray segment from
 // ray.origin to ray.origin + ray.direction * maxDistance.
 // Absorption only (no in-scattering): I = I0 * exp(-∫ σ * ρ(t) dt).
-float computeTransmittance(const Ray &ray, float maxDistance)
-{
-  if (maxDistance <= 0.0f || fogBlobs.empty())
-  {
-    return 1.0f;
-  }
+float computeTransmittance(const Ray &ray, float maxDistance) {
+    if (!globalFog.enabled || maxDistance <= 0.0f || fogBlobs.empty()) {
+        return 1.0f; // 100% transparent
+    }
 
-  const int NUM_STEPS = 128; // Increase for smoother but slower fog
-  float stepSize = maxDistance / static_cast<float>(NUM_STEPS);
-  glm::vec3 step = glm::normalize(ray.direction) * stepSize;
+    // Param 1: Quality. Higher = smoother fog, Slower render.
+    // 32 is fast, 128 is high quality.
+    float stepSize = maxDistance / static_cast<float>(globalFog.stepCount); 
+    glm::vec3 step = glm::normalize(ray.direction) * stepSize;
 
-  const float sigma_a = 0.3f; // Absorption coefficient
-  float opticalDepth = 0.0f;
-  glm::vec3 p = ray.origin;
+    // Param 2: Absorption (sigma_a). 
+    // This is the "Thickness Multiplier".
+    // 0.1 = Thin mist, 1.0 = Thick smoke.
+    float sigma_a = globalFog.absorption; 
 
-  for (int i = 0; i < NUM_STEPS; ++i)
-  {
-    p += step;
-    float rho = getDensity(p);
-    opticalDepth += sigma_a * rho * stepSize;
-  }
+    float opticalDepth = 0.0f;
+    glm::vec3 p = ray.origin;
 
-  // Clamp optical depth to avoid numerical issues
-  opticalDepth = glm::clamp(opticalDepth, 0.0f, 50.0f);
-  return expf(-opticalDepth);
+    // Ray Marching Loop
+    for (int i = 0; i < globalFog.stepCount; ++i) {
+        p += step;
+        float rho = getDensity(p); // Sample density at this point
+        opticalDepth += sigma_a * rho * stepSize;
+    }
+
+    // Beer-Lambert Law: T = exp(-opticalDepth)
+    return expf(-opticalDepth); 
 }
 
 glm::vec3 PhongModel(const Ray &ray, const Hit &hit)
@@ -780,6 +789,7 @@ glm::vec3 trace_reflection(const Ray &ray, const Hit &hit, int depth)
   Ray reflectionRay(hit.intersection + TOLERANCE * reflectedDirection, reflectedDirection);
   return hit.object->getMaterial().kreflect * trace_ray(reflectionRay, depth + 1);
 }
+
 glm::vec3 trace_ray(const Ray &ray, int depth)
 {
   Hit cHit;
@@ -865,13 +875,27 @@ glm::vec3 trace_ray(const Ray &ray, int depth)
 
   // Volumetric fog along this ray segment
   float transmittance = computeTransmittance(ray, cHit.distance);
-  glm::vec3 fogColor(0.8f, 0.85f, 0.9f);
-  glm::vec3 fogged = result * transmittance + fogColor * (1.0f - transmittance);
+  glm::vec3 fogged = result * transmittance + globalFog.color * (1.0f - transmittance);
   return fogged;
 }
 
-void sceneDefinition()
+
+void sceneDefinition(float t)
 {
+  fogBlobs.clear();
+
+  // 1. Parametrize Global Settings
+  globalFog.enabled = true;
+  globalFog.color = glm::vec3(0.9f, 0.9f, 0.95f);  // White/Blue mist
+  globalFog.absorption = 0.5f;                     // Medium thickness
+  globalFog.stepCount = 64;
+
+  // 2. Add Geometry
+  // A huge blob centered below the floor.
+  // Center: (0, -10, 10), Radius: 15.0, Peak Density: 0.5
+  // The top of the gaussian curve will peek through the floor.
+  fogBlobs.push_back({glm::vec3(0.0f, 4.9f, 10.0f), 1.2f * sqrt(t), 0.2f});
+
   // ============================
   // 1. MATERIALS
   // ============================
@@ -911,7 +935,8 @@ void sceneDefinition()
   matte_body.type = PHONG;
   matte_body.ambient = glm::vec3(0.0f, 0.1f, 0.0f);
   // 207, 109, 152
-  matte_body.diffuse = glm::vec3(207.0f / 255.0f, 109.0f / 255.0f, 152.0f / 255.0f);
+  // 255, 162, 145
+  matte_body.diffuse = glm::vec3(255.0f / 255.0f, 162.0f / 255.0f, 145.0f / 255.0f);
   matte_body.specular = glm::vec3(0.0f);
 
   Material matte_pinkish;
@@ -922,17 +947,17 @@ void sceneDefinition()
 
   Material pink_em;
   pink_em.type = PHONG;
-  pink_em.ambient = glm::vec3(0.0f);
+  pink_em.ambient = glm::vec3(0.3f);
   // pink_em.ambient = glm::vec3(227.0f/255.0f, 159.0f/255.0f, 189.0f/255.0f);
   // pink_em.ambient*=2;
   pink_em.diffuse = glm::vec3(227.0f / 255.0f, 159.0f / 255.0f, 189.0f / 255.0f);
-  pink_em.specular = glm::vec3(0.0f);
+  pink_em.specular = glm::vec3(0.1f);
 
   // --- Emissive Light Material (Fixes Black Hole) ---
   Material light_mat;
   light_mat.type = EMISSIVE; // Important: Matches the enum update
   light_mat.ambient = glm::vec3(0.5);
-  light_mat.diffuse = glm::vec3(0.5);
+  light_mat.diffuse = glm::vec3(0.5*t);
   light_mat.specular = glm::vec3(0.0f);
 
   Material glass;
@@ -986,7 +1011,7 @@ void sceneDefinition()
   // Transformation: Scale(3x3x3) -> Rotate(-17 deg) -> Translate
   glm::mat4 shortTransform = glm::mat4(1.0f);
   shortTransform = glm::translate(shortTransform, glm::vec3(2.0f, -3.5f, 10.0f));         // Position
-  shortTransform = glm::rotate(shortTransform, glm::radians(-17.0f), glm::vec3(0, 1, 0)); // Rotation Y
+  shortTransform = glm::rotate(shortTransform, glm::radians(-17.0f + (-25.0f * t)), glm::vec3(0, 1, 0)); // Rotation Y
   shortTransform = glm::scale(shortTransform, glm::vec3(3.0f, 3.0f, 3.0f));               // Size
 
   shortBox->setTransformation(shortTransform);
@@ -1000,22 +1025,55 @@ void sceneDefinition()
   objects.push_back(new Sphere(1.5f, glm::vec3(2.0f, -0.7f, 10.0f), glass));
 
   // Center Back: Blue Sphere
-  objects.push_back(new Sphere(2.5f, glm::vec3(0.0f, -3.5f, 16.0f), mirror));
+  objects.push_back(new Sphere(2.5f, glm::vec3(-1.5f + t, -3.5f, 16.0f), mirror));
 
   // ============================
   // 4. LIGHTING
   // ============================
 
-  glm::vec3 lightPos = glm::vec3(0, 5.2f, 10.0f); // Nearly touching ceiling
-  float lightRadius = 1.5f;
-  glm::vec3 lightColor = glm::vec3(1.0f, 173.0f / 255.0f, 237.0f / 255.f);
-  lightColor *= 0.7f;
+  // --- A. Main Key Light (The Animated Hero Light) ---
+  // Moved to 4.9f so it sits INSIDE the room (below ceiling)
+  glm::vec3 mainLightPos = glm::vec3(0, 4.9f, 10.0f);
 
-  // 1. Add Visible Sphere (Fixes Black Hole)
-  objects.push_back(new Sphere(lightRadius, lightPos, light_mat));
+  // Animate intensity slightly (pulsing effect)
+  float intensity = 0.6f + 0.1f * sin(t * 2.0f);
+  glm::vec3 mainColor = glm::vec3(1.0f, 0.95f, 0.9f) * intensity;
 
-  // 2. Add Light Source (Casts Light)
-  lights.push_back(new Light(lightPos, lightColor, lightRadius));
+  // Add visual sphere for main light
+  objects.push_back(new Sphere(1.5f, mainLightPos, light_mat));
+  // Add physical light (Radius 1.5 = Soft Shadows)
+  lights.push_back(new Light(mainLightPos, mainColor, 1.5f));
+
+  // --- B. Corner Fill Lights (Static) ---
+  // We use radius 0.0f (Hard Shadows) for these to keep rendering FAST.
+  // We use dim colors (0.2 or 0.3) so they don't overpower the main light.
+
+  // struct CornerLight {
+  //   glm::vec3 pos;
+  //   glm::vec3 color;
+  // };
+
+  // vector< CornerLight > corners = {
+  //     // Front Left: Subtle Cyan (Cool)
+  //     {glm::vec3(-5.5f, 4.5f, 2.0f), glm::vec3(0.0f, 0.2f, 0.2f)},
+
+  //     // Front Right: Subtle Orange (Warm)
+  //     {glm::vec3(5.5f, 4.5f, 2.0f), glm::vec3(0.2f, 0.15f, 0.0f)},
+
+  //     // Back Left:  Subtle Purple (Mystery)
+  //     {glm::vec3(-5.5f, 4.5f, 18.0f), glm::vec3(0.15f, 0.0f, 0.2f)},
+
+  //     // Back Right: Low White (Fill)
+  //     {glm::vec3(5.5f, 4.5f, 18.0f), glm::vec3(0.1f, 0.1f, 0.1f)}};
+
+  // for (const auto& L : corners) {
+  //   // 1. Add a small visual bulb (so we see the source)
+  //   objects.push_back(new Sphere(0.3f, L.pos, light_mat));
+
+  //   // 2. Add the actual light source
+  //   // NOTICE: Radius is 0.0f! This is crucial for speed.
+  //   lights.push_back(new Light(L.pos, L.color, 0.0f));
+  // }
 }
 
 glm::vec3 toneMapping(glm::vec3 color)
@@ -1036,6 +1094,7 @@ glm::vec3 toneMapping(glm::vec3 color)
   // color = glm::vec3(avg);
 
   // color = glm::clamp(color, glm::vec3(0.0f), glm::vec3(1.0f));
+  color = glm::clamp(color, glm::vec3(0.0f), glm::vec3(1.0f));
   return color;
 }
 
@@ -1097,78 +1156,85 @@ void renderTile(Image &img, int sx, int fx, int sy, int fy, float X, float Y, fl
   }
 }
 
-int main(int argc, const char *argv[])
-{
-  auto t0 = chrono::high_resolution_clock::now();
-  int multiplier = 3;
+#include <iomanip>      // for std::setw
+#include <filesystem>   // REQUIRED: for creating folders (C++17)
+#include <sys/stat.h>  
+bool directoryExists(const std::string& path) {
+    struct stat info;
+    // stat returns 0 if the path exists
+    if (stat(path.c_str(), &info) != 0) {
+        return false;
+    }
+    // Check if the path is a directory
+    return (info.st_mode & S_IFDIR);
+}
 
-  int width = multiplier * 1024; // width of the image
-  int height = multiplier * 768; // height of the image
-  float fov = 90;                // field of view
+int main(int argc, const char *argv[]) {
+    // === ANIMATION CONFIGURATION ===
+    int fps = 24;
+    int durationSec = 2;
+    int totalFrames = fps * durationSec;
+    string outputFolder = "renders"; // Name of the folder
+    // ===============================
 
-  sceneDefinition(); // Let's define a scene
+    // 1. Create the folder if it doesn't exist
+    if (!directoryExists(outputFolder)) {
+        mkdir(outputFolder.c_str(), 0777);
+        cout << "Created folder: " << outputFolder << endl;
+    }
 
-  Image image(width, height); // Create an image where we will store the result
+    int multiplier = 2;
+    int width = multiplier * 1024;
+    int height = multiplier * 768;
+    float fov = 90;
 
-  float s = 2 * tan(0.5 * fov / 180 * M_PI) / width;
-  float X = -s * width / 2;
-  float Y = s * height / 2;
-  cout << "s: " << s << endl;
-  cout << "X: " << X << endl;
-  cout << "Y: " << Y << endl;
+    Image image(width, height);
 
-  unsigned int cores = thread::hardware_concurrency();
-  if (cores == 0)
-  {
-    cores = 4;
-  }
-  cout << "Using " << cores << " threads\n";
+    float s = 2 * tan(0.5 * fov / 180 * M_PI) / width;
+    float X = -s * width / 2;
+    float Y = s * height / 2;
 
-  vector<thread> threads;
-  int wPerCore = width / cores;
+    unsigned int cores = thread::hardware_concurrency();
+    if (cores == 0) cores = 4;
 
-  thread progressThread(printProgress, width * height);
-  for (int i = 0; i < cores; ++i)
-  {
-    int start = i * wPerCore;
-    int finish = (i == cores - 1) ? width : (i + 1) * wPerCore;
+    cout << "Starting Render: " << totalFrames << " frames -> " << outputFolder << "/" << endl;
 
-    threads.emplace_back(renderTile, ref(image), start, finish, 0, height, X, Y, s);
-  }
+    for (int frame = 0; frame < totalFrames; ++frame) {
+        
+        float t = (float)frame / fps;
+        
+        // Clean up previous frame
+        for (Object *obj : objects) delete obj;
+        objects.clear();
+        for (Light *light : lights) delete light;
+        lights.clear();
+        pixels_rendered = 0; 
 
-  for (auto &thread : threads)
-  {
-    thread.join();
-  }
+        sceneDefinition(t); 
 
-  progressThread.join();
+        cout << "Rendering Frame " << frame + 1 << " / " << totalFrames << endl;
 
-  auto t1 = chrono::high_resolution_clock::now();
-  auto duration = chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
-  float seconds = duration.count() / 1000.0f;
-  float fps = 1.0f / seconds;
+        vector<thread> threads;
+        int wPerCore = width / cores;
 
-  std::cout << "It took " << seconds << " seconds to render the image." << std::endl;
-  std::cout << "I could render at " << fps << " frames per second." << std::endl;
+        for (int i = 0; i < cores; ++i) {
+            int start = i * wPerCore;
+            int finish = (i == cores - 1) ? width : (i + 1) * wPerCore;
+            threads.emplace_back(renderTile, ref(image), start, finish, 0, height, X, Y, s);
+        }
 
-  if (argc == 2)
-  {
-    image.writeImage(argv[1]);
-  }
-  else
-  {
-    image.writeImage("./result.ppm");
-  }
+        for (auto &thread : threads) thread.join();
 
-  for (Object *obj : objects)
-  {
-    delete obj;
-  }
-  objects.clear();
-  for (Light *light : lights)
-  {
-    delete light;
-  }
-  lights.clear();
-  return 0;
+        // 2. Construct path: "renders/frame_000.ppm"
+        stringstream ss;
+        ss << outputFolder << "/frame_" << setfill('0') << setw(3) << frame << ".ppm";
+        
+        image.writeImage(ss.str().c_str());
+    }
+
+    // Cleanup final frame objects
+    for (Object *obj : objects) delete obj;
+    for (Light *light : lights) delete light;
+
+    return 0;
 }
