@@ -19,11 +19,11 @@
 
 using namespace std;
 
-#define TOLERANCE 1e-3f
+#define TOLERANCE 1e-5f
 #define MAX_RECURSION_DEPTH 5
-#define AA_SAMPLES 5
-#define APERTURE_RADIUS 0.1f
-#define FOCAL_DISTANCE 15.0f
+#define AA_SAMPLES 1
+#define APERTURE_RADIUS 0.0f
+#define FOCAL_DISTANCE 12.0f
 
 /**
   Class representing a single ray.
@@ -351,6 +351,93 @@ vector< Light * > lights;  ///< A list of lights in the scene
 glm::vec3 ambient_light(0.01f);
 vector< Object * > objects;  ///< A list of all objects in the scene
 
+glm::vec3 WardModel(const Ray &ray, const Hit &hit) {
+    glm::vec3 color(0.0);
+    Material mat = hit.object->getMaterial();
+
+    // 1. Generate Anisotropic Basis
+    glm::vec3 N = glm::normalize(hit.normal);
+    glm::vec3 UP = glm::vec3(0, 1, 0);
+    if (abs(glm::dot(N, UP)) > 0.99f) UP = glm::vec3(0, 0, 1);
+    glm::vec3 T = glm::normalize(glm::cross(UP, N));
+    glm::vec3 B = glm::normalize(glm::cross(N, T));
+
+    for (int light_num = 0; light_num < lights.size(); light_num++) {
+        Light* currentLight = lights[light_num];
+        glm::vec3 L = glm::normalize(currentLight->position - hit.intersection);
+        glm::vec3 V = glm::normalize(-ray.direction);
+        glm::vec3 H = glm::normalize(L + V);
+
+        // --- UPDATED SHADOW LOGIC (Matches PhongModel) ---
+        float shadowPercent = 0.0f;
+        
+        if (currentLight->radius > 0.0f) {
+            // Soft Shadows (Area Light)
+            int shadow_samples = 16; 
+            float shadow_hits = 0.0f;
+            for (int s = 0; s < shadow_samples; ++s) {
+                glm::vec3 random_point = glm::vec3(random_range(-1,1), random_range(-1,1), random_range(-1,1));
+                random_point = glm::normalize(random_point) * currentLight->radius;
+                glm::vec3 samplePos = currentLight->position + random_point;
+                glm::vec3 sampleDir = glm::normalize(samplePos - hit.intersection);
+                Ray shadowRay(hit.intersection + sampleDir * TOLERANCE, sampleDir);
+                float distToLight = glm::distance(samplePos, hit.intersection);
+
+                bool hit_something = false;
+                for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
+                    Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
+                    if (shadow_hit.hit && shadow_hit.distance < distToLight) {
+                         if (objects[obj_num]->getMaterial().krefract > 0.0f) continue;
+                         if (objects[obj_num]->getMaterial().type == EMISSIVE) continue;
+                         hit_something = true; break;
+                    }
+                }
+                if (hit_something) shadow_hits += 1.0f;
+            }
+            shadowPercent = shadow_hits / (float)shadow_samples;
+        } else {
+             // Hard Shadows
+             Ray shadowRay(hit.intersection + L * TOLERANCE, L);
+             float distToLight = glm::distance(currentLight->position, hit.intersection);
+             for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
+                 Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
+                 if (shadow_hit.hit && shadow_hit.distance < distToLight) {
+                     if (objects[obj_num]->getMaterial().krefract > 0.0f) continue;
+                     shadowPercent = 1.0f; break;
+                 }
+             }
+        }
+        
+        // Skip calculation if fully shadowed
+        if (shadowPercent >= 1.0f) continue;
+
+        // --- Ward Model Calculation ---
+        float NdotL = std::max(0.0f, glm::dot(N, L));
+        float NdotL_clamped = std::max(0.001f, glm::dot(N, L));
+        float NdotV_clamped = std::max(0.001f, glm::dot(N, V));
+        float NdotH = glm::dot(N, H);
+        float HdotT = glm::dot(H, T);
+        float HdotB = glm::dot(H, B);
+
+        // Diffuse
+        glm::vec3 diffuse = mat.diffuse * NdotL;
+
+        // Specular (Ward)
+        float denum = 4.0f * glm::pi<float>() * mat.alphaX * mat.alphaY * sqrt(NdotL_clamped * NdotV_clamped);
+        float term1 = 1.0f / denum;
+        float exponent = - ( (pow(HdotT / mat.alphaX, 2.0f) + pow(HdotB / mat.alphaY, 2.0f)) / pow(NdotH, 2.0f) );
+        float term2 = exp(exponent);
+        float spec_val = term1 * term2;
+
+        if (NdotL > 0.0f) {
+             glm::vec3 specular = mat.specular * spec_val * NdotL;
+             // Apply Shadow
+             color += currentLight->color * (diffuse + specular) * (1.0f - shadowPercent);
+        }
+    }
+    color += ambient_light * mat.ambient;
+    return color;
+}
 
 glm::vec3 PhongModel(const Ray &ray, const Hit &hit) {
   glm::vec3 color(0.0);
@@ -385,6 +472,9 @@ glm::vec3 PhongModel(const Ray &ray, const Hit &hit) {
             for (int obj_num = 0; obj_num < objects.size(); ++obj_num) {
                  Hit shadow_hit = objects[obj_num]->intersect(shadowRay);
                  if (shadow_hit.hit && shadow_hit.distance < distToLight) {
+                     if (objects[obj_num]->getMaterial().krefract > 0.0f) continue;
+                     if (objects[obj_num]->getMaterial().type == EMISSIVE) continue; 
+                     
                      hit_something = true;
                      break;
                  }
@@ -455,13 +545,28 @@ glm::vec3 trace_ray(const Ray &ray, int depth) {
   if (!cHit.hit) return color;
   
   Material mat = cHit.object->getMaterial();
-
+ 
+  if (mat.type == EMISSIVE) {
+      return mat.ambient; 
+  }
+ 
   if (depth >= MAX_RECURSION_DEPTH) {
-    return PhongModel(ray, cHit);
+    glm::vec3 direct_color(0.0f);
+    if (mat.type == WARD) {
+      direct_color = WardModel(ray, cHit);
+    } else {
+      direct_color = PhongModel(ray, cHit);
+    }
+    return direct_color;
   }
 
-  glm::vec3 direct_color = PhongModel(ray, cHit);
-  
+  glm::vec3 direct_color(0.0f);
+  if (mat.type == WARD) {
+    direct_color = WardModel(ray, cHit);
+  } else {
+    direct_color = PhongModel(ray, cHit);
+  }
+
   if (mat.krefract > 0.0f) {
   glm::vec3 incident = glm::normalize(ray.direction);
   glm::vec3 normal = glm::normalize(cHit.normal);
@@ -523,157 +628,101 @@ glm::vec3 trace_ray(const Ray &ray, int depth) {
 
 
 void sceneDefinition() {
-  Material emerald_green;
-  emerald_green.ambient = glm::vec3(0.1f, 0.6f, 0.3f);
-  emerald_green.diffuse = glm::vec3(0.05f, 0.5f, 0.2f);
-  emerald_green.specular = glm::vec3(0.4f, 0.9f, 0.6f);
-  emerald_green.shininess = 30.0f;
+    // ============================
+    // 1. MATERIALS
+    // ============================
 
-  Material black_color;
-  black_color.ambient = glm::vec3(0.0f);
-  black_color.diffuse = glm::vec3(0.0f);
-  black_color.specular = glm::vec3(0.0f);
+    // --- Ward Anisotropic (Brushed Gold) ---
+    Material gold_ward;
+    gold_ward.type = WARD;
+    gold_ward.ambient = glm::vec3(0.2f, 0.15f, 0.05f); 
+    gold_ward.diffuse = glm::vec3(0.3f, 0.2f, 0.1f);   
+    gold_ward.specular = glm::vec3(0.9f, 0.8f, 0.4f);  
+    gold_ward.alphaX = 0.05f; // Sharp highlight
+    gold_ward.alphaY = 0.6f;  // Blurry spread
 
-  Material ruby_red;
-  ruby_red.ambient = glm::vec3(0.08f, 0.1f, 0.02f);
-  ruby_red.diffuse = glm::vec3(0.88f, 0.05f, 0.15f);
-  ruby_red.diffuse /= glm::vec3(5.0f);
-  ruby_red.specular = glm::vec3(0.1f, 0.05f, 0.06f);
-  ruby_red.shininess = 8.0f;
+    // --- Mirror ---
+    Material mirror;
+    mirror.type = PHONG;
+    mirror.ambient = glm::vec3(0.0f);
+    mirror.diffuse = glm::vec3(0.0f);
+    mirror.specular = glm::vec3(0.0f);
+    mirror.kreflect = 0.9f; 
+    mirror.shininess = 100.0f;
 
-  Material sapphire_blue;
-  sapphire_blue.ambient = glm::vec3(0.1f, 0.2f, 0.15f);
-  sapphire_blue.diffuse = glm::vec3(0.05f, 0.2f, 0.6f);
-  sapphire_blue.specular = glm::vec3(0.5f, 0.6f, 1.0f);
-  sapphire_blue.shininess = 150.0f;
+    // --- Matte Walls ---
+    Material matte_white;
+    matte_white.type = PHONG;
+    matte_white.ambient = glm::vec3(0.1f);
+    matte_white.diffuse = glm::vec3(0.9f);
+    matte_white.specular = glm::vec3(0.0f); 
 
-  Material gold;
-  gold.ambient = glm::vec3(0.09f, 0.07f, 0.01f);
-  gold.diffuse = glm::vec3(0.98f, 0.6f, 0.05f);
-  gold.diffuse /= glm::vec3(4.0f);
-  gold.specular = glm::vec3(0.9f);
-  gold.shininess = 100.0f;
+    Material matte_red;
+    matte_red.type = PHONG;
+    matte_red.ambient = glm::vec3(0.1f, 0.0f, 0.0f);
+    matte_red.diffuse = glm::vec3(0.9f, 0.1f, 0.1f);
+    matte_red.specular = glm::vec3(0.0f);
 
-  Material silver;
-  silver.ambient = glm::vec3(0.8f, 0.8f, 0.9f);
-  silver.diffuse = glm::vec3(0.7f, 0.7f, 0.8f);
-  silver.specular = glm::vec3(1.0f, 1.0f, 1.0f);
-  silver.shininess = 100.0f;
+    Material matte_green;
+    matte_green.type = PHONG;
+    matte_green.ambient = glm::vec3(0.0f, 0.1f, 0.0f);
+    matte_green.diffuse = glm::vec3(0.1f, 0.9f, 0.1f);
+    matte_green.specular = glm::vec3(0.0f);
 
-  Material warm_floor;
-  warm_floor.ambient = glm::vec3(0.095f, 0.092f, 0.085f);
-  warm_floor.diffuse = glm::vec3(0.95f, 0.92f, 0.95f);
-  warm_floor.diffuse /= glm::vec3(2.0f);
-  warm_floor.specular = glm::vec3(0.9f);
-  warm_floor.shininess = 10.0f;
+    Material matte_blue;
+    matte_blue.type = PHONG;
+    matte_blue.ambient = glm::vec3(0.0f, 0.0f, 0.1f);
+    matte_blue.diffuse = glm::vec3(0.1f, 0.1f, 0.9f);
+    matte_blue.specular = glm::vec3(0.0f);
 
-  Material red_specular;
-  red_specular.ambient = glm::vec3(0.0f, 0.1f, 0.1f);
-  red_specular.diffuse = glm::vec3(0.99f, 0.1f, 0.1f);
-  red_specular.diffuse /= glm::vec3(2.0f);
-  red_specular.specular = glm::vec3(0.1f);
-  red_specular.shininess = 10.0;
+    // --- Emissive Light Material (Fixes Black Hole) ---
+    Material light_mat;
+    light_mat.type = EMISSIVE; // Important: Matches the enum update
+    light_mat.ambient = glm::vec3(0.5);
+    light_mat.diffuse = glm::vec3(0.5);
+    light_mat.specular = glm::vec3(0.0f);
 
-  Material back_wall_material;
-  back_wall_material.ambient = glm::vec3(0.02f, 0.05f, 0.02f);
-  back_wall_material.diffuse = glm::vec3(0.0f, 0.94f, 0.16f);
-  back_wall_material.diffuse /= glm::vec3(5.0f);
-  back_wall_material.specular = glm::vec3(0.1f);
-  back_wall_material.shininess = 1.0f;
+    // ============================
+    // 2. GEOMETRY
+    // ============================
+    
+    // Floor
+    objects.push_back(new Plane(glm::vec3(0, -5, 0), glm::vec3(0, 1, 0), matte_white));
+    // Ceiling
+    objects.push_back(new Plane(glm::vec3(0, 5, 0), glm::vec3(0, -1, 0), matte_white));
+    // Back Wall
+    objects.push_back(new Plane(glm::vec3(0, 0, 20), glm::vec3(0, 0, -1), matte_white));
+    // Left Wall (Red)
+    objects.push_back(new Plane(glm::vec3(-6, 0, 0), glm::vec3(1, 0, 0), matte_red));
+    // Right Wall (Green)
+    objects.push_back(new Plane(glm::vec3(6, 0, 0), glm::vec3(-1, 0, 0), matte_green));
 
-  Material sky_backdrop;
-  sky_backdrop.ambient = glm::vec3(0.6f, 0.8f, 1.0f);
-  sky_backdrop.diffuse = glm::vec3(0.5f, 0.7f, 0.9f);
-  sky_backdrop.specular = glm::vec3(0.1f);
-  sky_backdrop.shininess = 1.0f;
-  sky_backdrop.krefract = 0.8f;
-  sky_backdrop.refractIdx = 2.0f;
-  sky_backdrop.transparency = 0.1f;
+    // ============================
+    // 3. OBJECTS 
+    // ============================
 
-  Material blue_specular;
-  blue_specular.ambient = glm::vec3(0.02f, 0.02f, 0.08f);
-  blue_specular.diffuse = glm::vec3(0.1f, 0.1f, 0.6f);
-  blue_specular.specular = glm::vec3(0.8f, 0.8f, 1.0f);
-  blue_specular.shininess = 128.0f;
-  blue_specular.kreflect = 0.99f;
+    // Left: Ward Sphere
+    objects.push_back(new Sphere(2.0f, glm::vec3(-3.0f, -3.0f, 12.0f), gold_ward));
 
-  objects.push_back(new Sphere(1.0, glm::vec3(1, -2, 8), blue_specular));
-  objects.push_back(new Sphere(0.5, glm::vec3(-1, -2.5, 6), red_specular));
-  // refractive sphere
-  objects.push_back(new Sphere(2.0, glm::vec3(-3,-1, 8), sky_backdrop));
-  // objects.push_back(new Sphere(1.0, glm::vec3(2,-2,6), green_diffuse));
+    // Right: Mirror Sphere
+    objects.push_back(new Sphere(2.0f, glm::vec3(3.0f, -3.0f, 10.0f), mirror));
+    
+    // Center Back: Blue Sphere
+    objects.push_back(new Sphere(1.5f, glm::vec3(0.0f, -3.5f, 16.0f), matte_blue));
 
-  // Planes
-  // left wall: from -15 to 15 (1, 0, 0)
-  objects.push_back(
-      new Plane(glm::vec3(-15, 0, 0), glm::vec3(1, 0, 0), ruby_red));
-  // right wall: from 15 to -15 (-1, 0, 0)
-  objects.push_back(
-      new Plane(glm::vec3(15, 0, 0), glm::vec3(-1, 0, 0), sapphire_blue));
-  // back wall
-  objects.push_back(
-      new Plane(glm::vec3(0, 0, 30), glm::vec3(0, 0, -1), back_wall_material));
-  // floor
-  objects.push_back(
-      new Plane(glm::vec3(0, -3, 0), glm::vec3(0, 1, 0), warm_floor));
-  // ceiling, not visible
-  objects.push_back(
-      new Plane(glm::vec3(0, 27, 0), glm::vec3(0, -1, 0), black_color));
-  // front wall, not visible
-  // objects.push_back(
-  //     new Plane(glm::vec3(0, 0, -0.01), glm::vec3(0, 0, 1), black_color));
+    // ============================
+    // 4. LIGHTING 
+    // ============================
 
-  // Area Light Material (bright white, non-reflective)
-  Material area_light_mat;
-  area_light_mat.ambient = glm::vec3(0.0f);
-  area_light_mat.diffuse = glm::vec3(1.0f);
-  area_light_mat.specular = glm::vec3(0.0f);
-  area_light_mat.shininess = 1.0f;
+    glm::vec3 lightPos = glm::vec3(0, 4.9f, 10.0f); // Nearly touching ceiling
+    float lightRadius = 1.5f;
+    glm::vec3 lightColor = glm::vec3(0.8f);
 
-  // --- AREA LIGHT DEFINITION ---
-  glm::vec3 areaLightPosition = glm::vec3(-5, 10, 10);
-  float areaLightRadius = 2.0f;
-  glm::vec3 areaLightColor = glm::vec3(0.8f);
+    // 1. Add Visible Sphere (Fixes Black Hole)
+    objects.push_back(new Sphere(lightRadius, lightPos, light_mat));
 
-  // 1. Add Sphere to object list (for visualization and casting shadows)
-  objects.push_back(
-      new Sphere(areaLightRadius, areaLightPosition, area_light_mat));
-
-  // 2. Add Light to light list (for illumination and soft shadows)
-  lights.push_back(new Light(areaLightPosition, areaLightColor));
-
-  // Cones
-  // Yellow cone
-  Cone *yellowCone = new Cone(gold);
-  glm::mat4 translation_yellow = glm::translate(glm::mat4(1.0f), glm::vec3(5, 9, 14));
-  glm::mat4 scaling_yellow = glm::scale(glm::mat4(1.0f), glm::vec3(3, 12, 3));
-  glm::mat4 transformation_yellow = translation_yellow * scaling_yellow;
-  yellowCone->setTransformation(transformation_yellow);
-  objects.push_back(yellowCone);
-
-  // Green cone
-  Cone *greenCone = new Cone(emerald_green);
-  glm::mat4 translation_green = glm::translate(glm::mat4(1.0f), glm::vec3(6, -3, 7));
-  float coneHeight = 3.0f;
-  float coneBase = 1.0f;
-  glm::mat4 scaling_green = glm::scale(glm::mat4(1.0f), glm::vec3(coneBase, coneHeight, coneBase));
-  glm::mat4 rotation_green = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f) - atan(coneBase/coneHeight), glm::vec3(0, 0, 1));
-  //glm::mat4 rotation_green = glm::rotate(glm::mat4(1.0f), glm::radians(-112.5f), glm::vec3(0, 0, 1));
-  glm::mat4 transformation_green = translation_green * rotation_green * scaling_green;
-  greenCone->setTransformation(transformation_green);
-  objects.push_back(greenCone);
-
-  // lights.push_back(new Light(glm::vec3(0, 26, 5), glm::vec3(0.7f)));
-  lights.push_back(new Light(glm::vec3(0, 1, 12), glm::vec3(0.55f)));
-  lights.push_back(new Light(glm::vec3(0, 5, 1), glm::vec3(0.63f)));
-
-  glm::vec3 lightPos = glm::vec3(0, 20, 10);
-  glm::vec3 lightColor = glm::vec3(1.0f); // A bright white light
-  glm::vec3 lightDir = glm::vec3(0, -1, 0); // Pointing straight down
-  float angle = 60.0f; // 30-degree cone
-  float sharpness = 16.0f; // A medium-sharp edge
-
-  lights.push_back(new Light(lightPos, lightColor, lightDir, angle, sharpness));
+    // 2. Add Light Source (Casts Light)
+    lights.push_back(new Light(lightPos, lightColor, lightRadius));
 }
 
 glm::vec3 toneMapping(glm::vec3 color) {
@@ -751,7 +800,7 @@ void renderTile(Image& img, int sx, int fx, int sy, int fy, float X, float Y, fl
 
 int main(int argc, const char *argv[]) {
   auto t0 = chrono::high_resolution_clock::now();
-  int multiplier = 1;
+  int multiplier = 3;
 
   int width = multiplier*1024;  // width of the image
   int height = multiplier*768;  // height of the image
