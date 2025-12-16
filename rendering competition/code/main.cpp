@@ -657,23 +657,32 @@ void sceneDefinition() {
     matte_white.diffuse = glm::vec3(0.9f);
     matte_white.specular = glm::vec3(0.0f); 
 
-    Material matte_red;
-    matte_red.type = PHONG;
-    matte_red.ambient = glm::vec3(0.1f, 0.0f, 0.0f);
-    matte_red.diffuse = glm::vec3(0.9f, 0.1f, 0.1f);
-    matte_red.specular = glm::vec3(0.0f);
+    Material matte_purple;
+    matte_purple.type = PHONG;
+    matte_purple.ambient = glm::vec3(0.1f, 0.0f, 0.0f);
+    matte_purple.diffuse = glm::vec3(157.0f/255.0f, 48.0f/255.0f, 176.0f/255.0f);
+    matte_purple.specular = glm::vec3(0.0f);
 
-    Material matte_green;
-    matte_green.type = PHONG;
-    matte_green.ambient = glm::vec3(0.0f, 0.1f, 0.0f);
-    matte_green.diffuse = glm::vec3(0.1f, 0.9f, 0.1f);
-    matte_green.specular = glm::vec3(0.0f);
+    Material matte_body;
+    matte_body.type = PHONG;
+    matte_body.ambient = glm::vec3(0.0f, 0.1f, 0.0f);
+    // 207, 109, 152
+    matte_body.diffuse = glm::vec3(207.0f/255.0f, 109.0f/255.0f, 152.0f/255.0f);
+    matte_body.specular = glm::vec3(0.0f);
 
-    Material matte_blue;
-    matte_blue.type = PHONG;
-    matte_blue.ambient = glm::vec3(0.0f, 0.0f, 0.1f);
-    matte_blue.diffuse = glm::vec3(0.1f, 0.1f, 0.9f);
-    matte_blue.specular = glm::vec3(0.0f);
+    Material matte_pinkish;
+    matte_pinkish.type = PHONG;
+    matte_pinkish.ambient = glm::vec3(0.0f, 0.0f, 0.1f);
+    matte_pinkish.diffuse = glm::vec3(227.0f/255.0f, 159.0f/255.0f, 189.0f/255.0f);
+    matte_pinkish.specular = glm::vec3(0.0f);
+
+    Material pink_em;
+    pink_em.type = PHONG;
+    pink_em.ambient = glm::vec3(0.0f);
+    // pink_em.ambient = glm::vec3(227.0f/255.0f, 159.0f/255.0f, 189.0f/255.0f);
+    // pink_em.ambient*=2;
+    pink_em.diffuse = glm::vec3(227.0f/255.0f, 159.0f/255.0f, 189.0f/255.0f);
+    pink_em.specular = glm::vec3(0.0f);
 
     // --- Emissive Light Material (Fixes Black Hole) ---
     Material light_mat;
@@ -682,20 +691,33 @@ void sceneDefinition() {
     light_mat.diffuse = glm::vec3(0.5);
     light_mat.specular = glm::vec3(0.0f);
 
+    Material glass;
+    glass.type = PHONG;
+    glass.ambient = glm::vec3(0.0f);   // Glass does not have ambient color
+    glass.diffuse = glm::vec3(0.0f);   // Glass is not diffuse (it is clear)
+    glass.specular = glm::vec3(1.0f);  // Bright white specular highlights
+    glass.shininess = 100.0f;          // Sharp, small highlights
+
+    glass.krefract = 1.0f;    // Enable refraction logic
+    glass.refractIdx = 1.5f;  // Index of Refraction for Glass
+    glass.transparency = 1.0f;  // Ensure specular highlights (glints) are visible
+    glass.kreflect = 0.0f;  // (Optional) Let Fresnel equations handle reflection
     // ============================
     // 2. GEOMETRY
     // ============================
     
     // Floor
-    objects.push_back(new Plane(glm::vec3(0, -5, 0), glm::vec3(0, 1, 0), matte_white));
+    objects.push_back(new Plane(glm::vec3(0, -5, 0), glm::vec3(0, 1, 0), matte_pinkish));
     // Ceiling
-    objects.push_back(new Plane(glm::vec3(0, 5, 0), glm::vec3(0, -1, 0), matte_white));
+    objects.push_back(new Plane(glm::vec3(0, 5, 0), glm::vec3(0, -1, 0), pink_em));
     // Back Wall
-    objects.push_back(new Plane(glm::vec3(0, 0, 20), glm::vec3(0, 0, -1), matte_white));
+    objects.push_back(new Plane(glm::vec3(0, 0, 20), glm::vec3(0, 0, -1), matte_pinkish));
     // Left Wall (Red)
-    objects.push_back(new Plane(glm::vec3(-6, 0, 0), glm::vec3(1, 0, 0), matte_red));
+    objects.push_back(new Plane(glm::vec3(-6, 0, 0), glm::vec3(1, 0, 0), matte_purple));
     // Right Wall (Green)
-    objects.push_back(new Plane(glm::vec3(6, 0, 0), glm::vec3(-1, 0, 0), matte_green));
+    objects.push_back(new Plane(glm::vec3(6, 0, 0), glm::vec3(-1, 0, 0), matte_body));
+    // front wall
+    objects.push_back(new Plane(glm::vec3(0, 0, -5), glm::vec3(0, 0, 1), matte_body));
 
     // ============================
     // 3. OBJECTS 
@@ -705,10 +727,10 @@ void sceneDefinition() {
     objects.push_back(new Sphere(2.0f, glm::vec3(-3.0f, -3.0f, 12.0f), gold_ward));
 
     // Right: Mirror Sphere
-    objects.push_back(new Sphere(2.0f, glm::vec3(3.0f, -3.0f, 10.0f), mirror));
+    objects.push_back(new Sphere(1.5f, glm::vec3(3.0f, -3.0f, 10.0f), glass));
     
     // Center Back: Blue Sphere
-    objects.push_back(new Sphere(1.5f, glm::vec3(0.0f, -3.5f, 16.0f), matte_blue));
+    objects.push_back(new Sphere(2.5f, glm::vec3(0.0f, -3.5f, 16.0f), mirror));
 
     // ============================
     // 4. LIGHTING 
