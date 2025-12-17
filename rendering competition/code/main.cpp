@@ -12,6 +12,9 @@
 #include <sstream>
 #include <thread>
 #include <vector>
+#include <iomanip>      // for std::setw
+#include <filesystem>   
+#include <sys/stat.h>  
 
 #include "glm/gtx/transform.hpp"
 #include "glm/glm.hpp"
@@ -22,7 +25,7 @@ using namespace std;
 
 #define TOLERANCE 1e-4f
 #define MAX_RECURSION_DEPTH 5
-#define AA_SAMPLES 64
+#define AA_SAMPLES 16 // changed from 64 to 16
 #define APERTURE_RADIUS 0.2f
 #define FOCAL_DISTANCE 13.0f
 
@@ -102,21 +105,17 @@ public:
     Hit hit;
     hit.hit = false;
 
-    // 1. Transform Ray from World Space to Object (Local) Space
-    // We do this so we can intersect with a simple AABB at (0,0,0)
     glm::vec3 localOrigin = glm::vec3(inverseTransformationMatrix * glm::vec4(ray.origin, 1.0f));
     glm::vec3 localDir = glm::vec3(inverseTransformationMatrix * glm::vec4(ray.direction, 0.0f));
 
-    // Normalize direction for accurate slab calculation
-    // (Note: This means 't' will be in local distance units, so we must recalculate world distance later)
     localDir = glm::normalize(localDir);
 
-    // 2. Slab Method Intersection
+    // Slab Method Intersection
     float tMin = 0.001f;
     float tMax = 100000.0f;
 
     glm::vec3 bounds[2] = {minBound, maxBound};
-    glm::vec3 axisNormal(0.0f); // Temporary normal storage
+    glm::vec3 axisNormal(0.0f);
     int hitAxis = -1;
 
     for (int i = 0; i < 3; ++i)
@@ -146,7 +145,7 @@ public:
         return hit; // Ray missed the box
     }
 
-    // 3. Valid Hit
+    // Valid Hit
     if (hitAxis != -1)
     {
       hit.hit = true;
@@ -169,19 +168,19 @@ public:
   }
 };
 
-// Helper for random float in [0, 1]
+// helper for random float in [0, 1]
 float random_float()
 {
   return static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
 }
 
-// Helper for random float in a specific range [min, max]
+// helper for random float in a specific range [min, max]
 float random_range(float min, float max)
 {
   return min + (max - min) * random_float();
 }
 
-// Helper to get a random point in a disk centered at (0, 0) with radius R
+// helper to get a random point in a disk centered at (0, 0) with radius R
 glm::vec3 random_in_unit_disk(float radius)
 {
   float r = random_float() * radius;
@@ -501,7 +500,7 @@ glm::vec3 WardModel(const Ray &ray, const Hit &hit)
     glm::vec3 V = glm::normalize(-ray.direction);
     glm::vec3 H = glm::normalize(L + V);
 
-    // --- UPDATED SHADOW LOGIC (Matches PhongModel) ---
+    // ------ SOFT SHADOWS ---------
     float shadowPercent = 0.0f;
 
     if (currentLight->radius > 0.0f)
@@ -709,7 +708,6 @@ glm::vec3 PhongModel(const Ray &ray, const Hit &hit)
 
             if (objMat.krefract > 0.0f)
             {
-              // --- GLASS SHADOW TRICK ---
               // Instead of ignoring glass, we say it blocks some light.
               // 0.6 means 60% of light gets through (Light Grey Shadow)
               // 0.0 means 0% gets through (Solid Black Shadow)
@@ -884,16 +882,11 @@ void sceneDefinition(float t)
 {
   fogBlobs.clear();
 
-  // 1. Parametrize Global Settings
   globalFog.enabled = true;
   globalFog.color = glm::vec3(0.9f, 0.9f, 0.95f);  // White/Blue mist
   globalFog.absorption = 0.5f;                     // Medium thickness
   globalFog.stepCount = 64;
 
-  // 2. Add Geometry
-  // A huge blob centered below the floor.
-  // Center: (0, -10, 10), Radius: 15.0, Peak Density: 0.5
-  // The top of the gaussian curve will peek through the floor.
   fogBlobs.push_back({glm::vec3(0.0f, 4.9f, 10.0f), 1.2f * sqrt(t), 0.2f});
 
   // ============================
@@ -1043,37 +1036,6 @@ void sceneDefinition(float t)
   objects.push_back(new Sphere(1.5f, mainLightPos, light_mat));
   // Add physical light (Radius 1.5 = Soft Shadows)
   lights.push_back(new Light(mainLightPos, mainColor, 1.5f));
-
-  // --- B. Corner Fill Lights (Static) ---
-  // We use radius 0.0f (Hard Shadows) for these to keep rendering FAST.
-  // We use dim colors (0.2 or 0.3) so they don't overpower the main light.
-
-  // struct CornerLight {
-  //   glm::vec3 pos;
-  //   glm::vec3 color;
-  // };
-
-  // vector< CornerLight > corners = {
-  //     // Front Left: Subtle Cyan (Cool)
-  //     {glm::vec3(-5.5f, 4.5f, 2.0f), glm::vec3(0.0f, 0.2f, 0.2f)},
-
-  //     // Front Right: Subtle Orange (Warm)
-  //     {glm::vec3(5.5f, 4.5f, 2.0f), glm::vec3(0.2f, 0.15f, 0.0f)},
-
-  //     // Back Left:  Subtle Purple (Mystery)
-  //     {glm::vec3(-5.5f, 4.5f, 18.0f), glm::vec3(0.15f, 0.0f, 0.2f)},
-
-  //     // Back Right: Low White (Fill)
-  //     {glm::vec3(5.5f, 4.5f, 18.0f), glm::vec3(0.1f, 0.1f, 0.1f)}};
-
-  // for (const auto& L : corners) {
-  //   // 1. Add a small visual bulb (so we see the source)
-  //   objects.push_back(new Sphere(0.3f, L.pos, light_mat));
-
-  //   // 2. Add the actual light source
-  //   // NOTICE: Radius is 0.0f! This is crucial for speed.
-  //   lights.push_back(new Light(L.pos, L.color, 0.0f));
-  // }
 }
 
 glm::vec3 toneMapping(glm::vec3 color)
@@ -1119,12 +1081,11 @@ void renderTile(Image &img, int sx, int fx, int sy, int fy, float X, float Y, fl
   for (int i = sx; i < fx; i++)
   {
     for (int j = sy; j < fy; j++)
-    { // Corrected: change j < fy to j < fy
+    {
       glm::vec3 pixel_color(0.0f);
 
       for (int k = 0; k < AA_SAMPLES; ++k)
       {
-        // ... (AA jitter for direction calculation remains here)
         float jitter_x = random_range(-s / 2, s / 2);
         float jitter_y = random_range(-s / 2, s / 2);
 
@@ -1137,7 +1098,6 @@ void renderTile(Image &img, int sx, int fx, int sy, int fy, float X, float Y, fl
 
         // 2. Randomize the ray origin (Aperture)
         glm::vec3 aperture_sample = random_in_unit_disk(APERTURE_RADIUS);
-        // Note: The aperture is on the Z=0 plane since camera is at (0, 0, 0) looking down Z.
         glm::vec3 rayOrigin = cameraOrigin + aperture_sample;
 
         // 3. New ray direction targets the focal point
@@ -1147,7 +1107,6 @@ void renderTile(Image &img, int sx, int fx, int sy, int fy, float X, float Y, fl
         pixel_color += trace_ray(ray, 0);
       }
 
-      // Average and tone map...
       pixel_color /= (float)AA_SAMPLES;
       img.setPixel(i, j, toneMapping(pixel_color));
 
@@ -1156,9 +1115,6 @@ void renderTile(Image &img, int sx, int fx, int sy, int fy, float X, float Y, fl
   }
 }
 
-#include <iomanip>      // for std::setw
-#include <filesystem>   // REQUIRED: for creating folders (C++17)
-#include <sys/stat.h>  
 bool directoryExists(const std::string& path) {
     struct stat info;
     // stat returns 0 if the path exists
@@ -1174,7 +1130,7 @@ int main(int argc, const char *argv[]) {
     int fps = 24;
     int durationSec = 2;
     int totalFrames = fps * durationSec;
-    string outputFolder = "renders"; // Name of the folder
+    string outputFolder = "renders";
     // ===============================
 
     // 1. Create the folder if it doesn't exist
@@ -1184,8 +1140,9 @@ int main(int argc, const char *argv[]) {
     }
 
     int multiplier = 2;
-    int width = multiplier * 1024;
-    int height = multiplier * 768;
+    int divisor = 4;
+    int width = multiplier * 1024 / divisor;
+    int height = multiplier * 768 / divisor;
     float fov = 90;
 
     Image image(width, height);
@@ -1210,9 +1167,10 @@ int main(int argc, const char *argv[]) {
         lights.clear();
         pixels_rendered = 0; 
 
+        // cout << "Value of t: " << t << endl;
         sceneDefinition(t); 
 
-        cout << "Rendering Frame " << frame + 1 << " / " << totalFrames << endl;
+        cout << "Rendering Frame " << frame << " / " << totalFrames - 1 << endl;
 
         vector<thread> threads;
         int wPerCore = width / cores;
